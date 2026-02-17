@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Combobox, ComboboxOption } from '@/components/ui/combobox';
-import { GitBranch, Loader2, AlertCircle, CheckCircle, User } from 'lucide-react';
+import { GitBranch, Loader2, AlertCircle, CheckCircle, User, Wifi, ChevronDown, ChevronUp } from 'lucide-react';
 
 interface RecentRepo {
   owner: string;
@@ -34,6 +34,16 @@ export function RepoSelector() {
   const [recentRepos, setRecentRepos] = useState<RecentRepo[]>([]);
   const [ownerReady, setOwnerReady] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [healthLoading, setHealthLoading] = useState(false);
+  const [healthOpen, setHealthOpen] = useState(false);
+  const [healthResult, setHealthResult] = useState<{
+    tokenPresent: boolean;
+    tokenValid: boolean;
+    authenticatedUser: string | null;
+    tokenScopes: string[];
+    rateLimit: { remaining: number; limit: number; resetAt: string } | null;
+    repoAccess?: { canAccess: boolean; isPrivate: boolean; error?: string };
+  } | null>(null);
 
   // Load remembered username and recent repos from localStorage
   useEffect(() => {
@@ -191,6 +201,39 @@ export function RepoSelector() {
     fetchBranches(recent.owner, recent.repo);
   };
 
+  const handleTestConnection = async () => {
+    setHealthLoading(true);
+    setHealthOpen(true);
+    setHealthResult(null);
+    try {
+      const params = new URLSearchParams();
+      if (owner.trim()) params.set('owner', owner.trim());
+      if (repo) params.set('repo', repo);
+      const res = await fetch(`/api/health?${params.toString()}`);
+      if (res.ok) {
+        setHealthResult(await res.json());
+      } else {
+        setHealthResult({
+          tokenPresent: false,
+          tokenValid: false,
+          authenticatedUser: null,
+          tokenScopes: [],
+          rateLimit: null,
+        });
+      }
+    } catch {
+      setHealthResult({
+        tokenPresent: false,
+        tokenValid: false,
+        authenticatedUser: null,
+        tokenScopes: [],
+        rateLimit: null,
+      });
+    } finally {
+      setHealthLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-background p-4">
       <div className="w-full max-w-lg space-y-6">
@@ -274,6 +317,105 @@ export function RepoSelector() {
               {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Load Repository
             </Button>
+
+            <div className="border-t pt-3">
+              <button
+                onClick={healthOpen && healthResult ? () => setHealthOpen(!healthOpen) : handleTestConnection}
+                disabled={healthLoading}
+                className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors w-full"
+              >
+                {healthLoading ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <Wifi className="h-3 w-3" />
+                )}
+                <span>Test Connection</span>
+                {healthResult && (
+                  healthOpen ? <ChevronUp className="h-3 w-3 ml-auto" /> : <ChevronDown className="h-3 w-3 ml-auto" />
+                )}
+              </button>
+
+              {healthOpen && healthResult && (
+                <div className="mt-3 space-y-2 text-xs">
+                  <div className="flex items-center gap-2">
+                    {healthResult.tokenPresent ? (
+                      <CheckCircle className="h-3.5 w-3.5 text-green-500" />
+                    ) : (
+                      <AlertCircle className="h-3.5 w-3.5 text-red-500" />
+                    )}
+                    <span>
+                      {healthResult.tokenPresent
+                        ? 'GitHub token is configured'
+                        : 'GitHub token is missing — add GITHUB_TOKEN in Vercel env vars'}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    {healthResult.tokenValid ? (
+                      <CheckCircle className="h-3.5 w-3.5 text-green-500" />
+                    ) : (
+                      <AlertCircle className="h-3.5 w-3.5 text-red-500" />
+                    )}
+                    <span>
+                      {healthResult.tokenValid
+                        ? `Authenticated as ${healthResult.authenticatedUser}`
+                        : 'Token is invalid or expired'}
+                    </span>
+                  </div>
+
+                  {healthResult.tokenValid && (
+                    <div className="flex items-center gap-2">
+                      {healthResult.tokenScopes.length > 0 ? (
+                        healthResult.tokenScopes.includes('repo') ? (
+                          <CheckCircle className="h-3.5 w-3.5 text-green-500" />
+                        ) : (
+                          <AlertCircle className="h-3.5 w-3.5 text-yellow-500" />
+                        )
+                      ) : (
+                        <AlertCircle className="h-3.5 w-3.5 text-yellow-500" />
+                      )}
+                      <span>
+                        {healthResult.tokenScopes.length > 0
+                          ? `Scopes: ${healthResult.tokenScopes.join(', ')}${
+                              !healthResult.tokenScopes.includes('repo')
+                                ? ' (missing "repo" scope for private repos)'
+                                : ''
+                            }`
+                          : 'No scopes detected (fine-grained token or limited permissions)'}
+                      </span>
+                    </div>
+                  )}
+
+                  {healthResult.rateLimit && (
+                    <div className="flex items-center gap-2">
+                      {healthResult.rateLimit.remaining > 100 ? (
+                        <CheckCircle className="h-3.5 w-3.5 text-green-500" />
+                      ) : (
+                        <AlertCircle className="h-3.5 w-3.5 text-yellow-500" />
+                      )}
+                      <span>
+                        Rate limit: {healthResult.rateLimit.remaining}/{healthResult.rateLimit.limit} remaining
+                      </span>
+                    </div>
+                  )}
+
+                  {healthResult.repoAccess && (
+                    <div className="flex items-center gap-2">
+                      {healthResult.repoAccess.canAccess ? (
+                        <CheckCircle className="h-3.5 w-3.5 text-green-500" />
+                      ) : (
+                        <AlertCircle className="h-3.5 w-3.5 text-red-500" />
+                      )}
+                      <span>
+                        {healthResult.repoAccess.canAccess
+                          ? `Can access ${owner}/${repo}${healthResult.repoAccess.isPrivate ? ' (private)' : ''}`
+                          : `Cannot access ${owner}/${repo}: ${healthResult.repoAccess.error}`}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           </CardContent>
         </Card>
 
