@@ -15,6 +15,7 @@ import {
   Settings,
   ChevronLeft,
   Menu,
+  Wand2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -29,6 +30,7 @@ const navItems = [
   { id: 'standards', label: 'Standards', icon: Ruler, view: 'standards' },
   { id: 'maps', label: 'Maps', icon: GitFork, view: 'maps' },
   { id: 'inbox', label: 'Inbox', icon: Inbox, view: 'inbox' },
+  { id: 'script-builder', label: 'Script Builder', icon: Wand2, view: 'script-builder' },
 ];
 
 export function Sidebar() {

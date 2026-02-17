@@ -13,6 +13,7 @@ import { ReferenceViewer } from '@/components/reference/reference-viewer';
 import { StandardsViewer } from '@/components/standards/standards-viewer';
 import { MapsViewer } from '@/components/maps/maps-viewer';
 import { InboxList } from '@/components/inbox/inbox-list';
+import { ScriptBuilder } from '@/components/script-builder/script-builder';
 import { KpiSkeleton } from '@/components/shared/loading-skeleton';
 
 function DashboardContent() {
@@ -51,6 +52,8 @@ function DashboardContent() {
         return <MapsViewer />;
       case 'inbox':
         return <InboxList />;
+      case 'script-builder':
+        return <ScriptBuilder />;
       default:
         return <OverviewPage />;
     }
