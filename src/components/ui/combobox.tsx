@@ -138,7 +138,11 @@ export function Combobox({
             }
           }}
           onFocus={() => {
-            if (options.length > 0 || loading) setOpen(true);
+            if (options.length > 0 || loading) {
+              setOpen(true);
+              // Clear query on focus so all options are visible
+              setQuery('');
+            }
           }}
           onKeyDown={handleKeyDown}
           placeholder={placeholder}
