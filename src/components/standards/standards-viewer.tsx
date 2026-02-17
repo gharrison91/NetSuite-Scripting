@@ -27,7 +27,12 @@ export function StandardsViewer() {
     async (path: string) => {
       setSelectedFile(path);
       const c = await fetchFile(path);
-      if (c) setContent(c);
+      if (c) {
+        setContent(c);
+      } else {
+        // Fetch failed (config may not be ready yet) — reset so auto-load can retry
+        setSelectedFile(null);
+      }
     },
     [fetchFile]
   );
