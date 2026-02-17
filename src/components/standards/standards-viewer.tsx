@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useRepo } from '@/hooks/use-repo';
-import { useFileContent } from '@/hooks/use-file-content';
 import { MarkdownRenderer } from '@/components/shared/markdown-renderer';
 import { EmptyState } from '@/components/shared/empty-state';
 import { ContentSkeleton } from '@/components/shared/loading-skeleton';
@@ -12,9 +11,9 @@ import { cn } from '@/lib/utils';
 
 export function StandardsViewer() {
   const { tree, config } = useRepo();
-  const { fetchFile, loading } = useFileContent();
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [content, setContent] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
   const autoLoaded = useRef(false);
 
@@ -26,19 +25,36 @@ export function StandardsViewer() {
       .map((n) => ({ name: n.name, path: n.path }));
   }, [tree]);
 
+  // Direct fetch — bypasses useFileContent hook to avoid state bugs
   const loadFile = useCallback(
     async (path: string) => {
+      if (!config) return;
       setSelectedFile(path);
       setContent(null);
       setFileError(null);
-      const c = await fetchFile(path);
-      if (c) {
-        setContent(c);
-      } else {
-        setFileError('Failed to load file. Check the Settings page for token health.');
+      setLoading(true);
+
+      try {
+        const url = `/api/repo/file?owner=${config.owner}&repo=${config.repo}&branch=${config.branch}&path=${encodeURIComponent(path)}`;
+        const res = await fetch(url);
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.error || `HTTP ${res.status}`);
+        }
+        const data = await res.json();
+        if (data.content) {
+          setContent(data.content);
+        } else {
+          throw new Error('File returned empty content');
+        }
+      } catch (err) {
+        console.error('Standards file load error:', err);
+        setFileError(err instanceof Error ? err.message : 'Failed to load file');
+      } finally {
+        setLoading(false);
       }
     },
-    [fetchFile]
+    [config]
   );
 
   // Auto-load first file once when files and config are ready
