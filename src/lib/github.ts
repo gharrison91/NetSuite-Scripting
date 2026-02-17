@@ -127,6 +127,7 @@ export async function checkTokenHealth(owner?: string, repo?: string) {
     tokenScopes: string[];
     rateLimit: { remaining: number; limit: number; resetAt: string } | null;
     repoAccess?: { canAccess: boolean; isPrivate: boolean; error?: string };
+    contentAccess?: { canRead: boolean; error?: string };
   } = {
     tokenPresent: false,
     tokenValid: false,
@@ -175,6 +176,35 @@ export async function checkTokenHealth(owner?: string, repo?: string) {
           canAccess: true,
           isPrivate: validation.data?.private ?? false,
         };
+
+        // Also test content/tree access — this requires "Contents" permission
+        const defaultBranch = validation.data?.default_branch || 'main';
+        try {
+          await octokit.git.getTree({
+            owner,
+            repo,
+            tree_sha: defaultBranch,
+          });
+          result.contentAccess = { canRead: true };
+        } catch (treeError: unknown) {
+          const status = (treeError as { status?: number }).status;
+          if (status === 403) {
+            result.contentAccess = {
+              canRead: false,
+              error: 'Token lacks "Contents" read permission — edit your token and add Contents (read-only) under Repository permissions',
+            };
+          } else if (status === 404) {
+            result.contentAccess = {
+              canRead: false,
+              error: `Branch "${defaultBranch}" not found or contents not accessible`,
+            };
+          } else {
+            result.contentAccess = {
+              canRead: false,
+              error: 'Failed to read repository contents',
+            };
+          }
+        }
       } else {
         result.repoAccess = {
           canAccess: false,

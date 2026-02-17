@@ -43,6 +43,7 @@ export function RepoSelector() {
     tokenScopes: string[];
     rateLimit: { remaining: number; limit: number; resetAt: string } | null;
     repoAccess?: { canAccess: boolean; isPrivate: boolean; error?: string };
+    contentAccess?: { canRead: boolean; error?: string };
   } | null>(null);
 
   // Load remembered username and recent repos from localStorage
@@ -410,6 +411,21 @@ export function RepoSelector() {
                         {healthResult.repoAccess.canAccess
                           ? `Can access ${owner}/${repo}${healthResult.repoAccess.isPrivate ? ' (private)' : ''}`
                           : `Cannot access ${owner}/${repo}: ${healthResult.repoAccess.error}`}
+                      </span>
+                    </div>
+                  )}
+
+                  {healthResult.contentAccess && (
+                    <div className="flex items-start gap-2">
+                      {healthResult.contentAccess.canRead ? (
+                        <CheckCircle className="h-3.5 w-3.5 text-green-500 shrink-0 mt-0.5" />
+                      ) : (
+                        <AlertCircle className="h-3.5 w-3.5 text-red-500 shrink-0 mt-0.5" />
+                      )}
+                      <span>
+                        {healthResult.contentAccess.canRead
+                          ? 'Can read repository contents (files & folders)'
+                          : healthResult.contentAccess.error}
                       </span>
                     </div>
                   )}
