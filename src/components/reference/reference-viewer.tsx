@@ -1,19 +1,22 @@
 'use client';
 
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useRepo } from '@/hooks/use-repo';
 import { useFileContent } from '@/hooks/use-file-content';
 import { MarkdownRenderer } from '@/components/shared/markdown-renderer';
 import { EmptyState } from '@/components/shared/empty-state';
 import { ContentSkeleton } from '@/components/shared/loading-skeleton';
-import { BookOpen } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { BookOpen, RefreshCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 export function ReferenceViewer() {
-  const { tree } = useRepo();
+  const { tree, config } = useRepo();
   const { fetchFile, loading } = useFileContent();
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [content, setContent] = useState<string | null>(null);
+  const [fileError, setFileError] = useState<string | null>(null);
+  const autoLoaded = useRef(false);
 
   const files = useMemo(() => {
     const refDir = tree.find((n) => n.name === 'reference' && n.type === 'directory');
@@ -26,22 +29,25 @@ export function ReferenceViewer() {
   const loadFile = useCallback(
     async (path: string) => {
       setSelectedFile(path);
+      setContent(null);
+      setFileError(null);
       const c = await fetchFile(path);
       if (c) {
         setContent(c);
       } else {
-        // Fetch failed (config may not be ready yet) — reset so auto-load can retry
-        setSelectedFile(null);
+        setFileError('Failed to load file. Check the Settings page for token health.');
       }
     },
     [fetchFile]
   );
 
+  // Auto-load first file once when files and config are ready
   useEffect(() => {
-    if (files.length > 0 && !selectedFile) {
+    if (files.length > 0 && config && !autoLoaded.current) {
+      autoLoaded.current = true;
       loadFile(files[0].path);
     }
-  }, [files, selectedFile, loadFile]);
+  }, [files, config, loadFile]);
 
   if (files.length === 0) {
     return (
@@ -77,6 +83,18 @@ export function ReferenceViewer() {
       <div className="flex-1 border rounded-lg overflow-y-auto p-6">
         {loading ? (
           <ContentSkeleton />
+        ) : fileError ? (
+          <div className="flex flex-col items-center justify-center h-full gap-3">
+            <p className="text-sm text-destructive">{fileError}</p>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => selectedFile && loadFile(selectedFile)}
+            >
+              <RefreshCw className="h-3 w-3 mr-2" />
+              Retry
+            </Button>
+          </div>
         ) : content ? (
           <MarkdownRenderer content={content} enableTableParsing />
         ) : (

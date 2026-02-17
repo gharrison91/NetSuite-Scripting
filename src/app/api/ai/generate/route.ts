@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+// Allow up to 60 seconds for AI generation on Vercel
+export const maxDuration = 60;
+
 const SCRIPT_TYPE_LABELS: Record<string, string> = {
   'user-event': 'UserEventScript',
   client: 'ClientScript',
@@ -43,7 +46,12 @@ function buildSystemPrompt(
   if (contextFiles.length > 0) {
     prompt += '\n## Project Context\nUse the following reference material from this project:\n\n';
     for (const file of contextFiles) {
-      prompt += `### ${file.name}\n${file.content}\n\n`;
+      // Truncate very large files to avoid exceeding context limits
+      const truncated =
+        file.content.length > 8000
+          ? file.content.slice(0, 8000) + '\n\n[... truncated for length]'
+          : file.content;
+      prompt += `### ${file.name}\n${truncated}\n\n`;
     }
   }
 
@@ -52,9 +60,9 @@ function buildSystemPrompt(
 
 export async function POST(request: NextRequest) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
+  if (!apiKey || apiKey === 'your_api_key_here') {
     return NextResponse.json(
-      { error: 'ANTHROPIC_API_KEY not configured' },
+      { error: 'ANTHROPIC_API_KEY not configured. Add it in Vercel project settings under Environment Variables.' },
       { status: 500 }
     );
   }
@@ -80,39 +88,70 @@ export async function POST(request: NextRequest) {
 
     const systemPrompt = buildSystemPrompt(scriptType, contextFiles);
 
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-5-20250929',
-        max_tokens: 8192,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: prompt }],
-      }),
-    });
+    // 50-second timeout for the Anthropic API call
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 50000);
 
-    if (!response.ok) {
-      const errBody = await response.text();
-      console.error('Anthropic API error:', response.status, errBody);
-      return NextResponse.json(
-        { error: `Anthropic API error: ${response.status}` },
-        { status: 502 }
-      );
+    try {
+      const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-5-20250929',
+          max_tokens: 8192,
+          system: systemPrompt,
+          messages: [{ role: 'user', content: prompt }],
+        }),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeout);
+
+      if (!response.ok) {
+        const errBody = await response.text();
+        console.error('Anthropic API error:', response.status, errBody);
+
+        if (response.status === 401) {
+          return NextResponse.json(
+            { error: 'Invalid Anthropic API key. Check your ANTHROPIC_API_KEY in Vercel environment variables.' },
+            { status: 401 }
+          );
+        }
+        if (response.status === 429) {
+          return NextResponse.json(
+            { error: 'Rate limited by Anthropic API. Wait a moment and try again.' },
+            { status: 429 }
+          );
+        }
+        return NextResponse.json(
+          { error: `Anthropic API error (${response.status}). Check server logs for details.` },
+          { status: 502 }
+        );
+      }
+
+      const data = await response.json();
+      const generatedCode =
+        data.content?.[0]?.type === 'text' ? data.content[0].text : '';
+
+      return NextResponse.json({ code: generatedCode });
+    } catch (fetchErr) {
+      clearTimeout(timeout);
+      if (fetchErr instanceof Error && fetchErr.name === 'AbortError') {
+        return NextResponse.json(
+          { error: 'AI generation timed out. Try a simpler prompt or fewer context files.' },
+          { status: 504 }
+        );
+      }
+      throw fetchErr;
     }
-
-    const data = await response.json();
-    const generatedCode =
-      data.content?.[0]?.type === 'text' ? data.content[0].text : '';
-
-    return NextResponse.json({ code: generatedCode });
   } catch (err) {
     console.error('Generate error:', err);
     return NextResponse.json(
-      { error: 'Failed to generate script' },
+      { error: err instanceof Error ? err.message : 'Failed to generate script' },
       { status: 500 }
     );
   }

@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useRepo } from '@/hooks/use-repo';
-import { useFileContent } from '@/hooks/use-file-content';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -13,7 +12,18 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { EmptyState } from '@/components/shared/empty-state';
-import { Wand2, Copy, Check, Loader2, FileCode2, BookOpen, Ruler } from 'lucide-react';
+import {
+  Wand2,
+  Copy,
+  Check,
+  Loader2,
+  FileCode2,
+  BookOpen,
+  Ruler,
+  Eye,
+  Code,
+  Download,
+} from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const SCRIPT_TYPES = [
@@ -33,9 +43,60 @@ interface ContextFile {
   selected: boolean;
 }
 
+// Simple keyword-based syntax highlighting for SuiteScript
+function highlightCode(code: string) {
+  const lines = code.split('\n');
+  return lines.map((line, i) => {
+    let highlighted = line
+      // Escape HTML
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+
+    // Comments (// and /** */)
+    if (/^\s*\/\//.test(highlighted) || /^\s*\*/.test(highlighted) || /^\s*\/\*/.test(highlighted)) {
+      highlighted = `<span class="text-emerald-400">${highlighted}</span>`;
+    } else {
+      // Strings
+      highlighted = highlighted.replace(
+        /('(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")/g,
+        '<span class="text-amber-300">$1</span>'
+      );
+      // Keywords
+      highlighted = highlighted.replace(
+        /\b(define|return|const|let|var|function|if|else|try|catch|finally|throw|new|typeof|instanceof|for|while|switch|case|break|default|true|false|null|undefined)\b/g,
+        '<span class="text-purple-400">$1</span>'
+      );
+      // @ annotations in JSDoc
+      highlighted = highlighted.replace(
+        /(@\w+)/g,
+        '<span class="text-blue-400">$1</span>'
+      );
+      // Numbers
+      highlighted = highlighted.replace(
+        /\b(\d+)\b/g,
+        '<span class="text-orange-300">$1</span>'
+      );
+      // Function calls
+      highlighted = highlighted.replace(
+        /\b(\w+)(\s*\()/g,
+        '<span class="text-yellow-200">$1</span>$2'
+      );
+    }
+
+    return (
+      <div key={i} className="flex">
+        <span className="select-none text-muted-foreground/40 w-10 text-right pr-4 shrink-0">
+          {i + 1}
+        </span>
+        <span dangerouslySetInnerHTML={{ __html: highlighted }} />
+      </div>
+    );
+  });
+}
+
 export function ScriptBuilder() {
   const { tree, config } = useRepo();
-  const { fetchFile } = useFileContent();
   const [scriptType, setScriptType] = useState('user-event');
   const [prompt, setPrompt] = useState('');
   const [generatedCode, setGeneratedCode] = useState('');
@@ -43,6 +104,7 @@ export function ScriptBuilder() {
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [contextFiles, setContextFiles] = useState<ContextFile[]>([]);
+  const [viewMode, setViewMode] = useState<'preview' | 'code'>('preview');
 
   // Discover reference and standards files from repo tree
   useEffect(() => {
@@ -88,40 +150,71 @@ export function ScriptBuilder() {
   );
 
   const handleGenerate = async () => {
-    if (!prompt.trim()) return;
+    if (!prompt.trim() || !config) return;
     setGenerating(true);
     setError(null);
     setGeneratedCode('');
 
     try {
-      // Fetch selected context files
+      // Fetch selected context files in PARALLEL
       const selected = contextFiles.filter((f) => f.selected);
-      const contextData: { name: string; content: string }[] = [];
-
-      for (const file of selected) {
-        const content = await fetchFile(file.path);
-        if (content) {
-          contextData.push({ name: file.name, content });
+      const fetchPromises = selected.map(async (file) => {
+        try {
+          const res = await fetch(
+            `/api/repo/file?owner=${config.owner}&repo=${config.repo}&branch=${config.branch}&path=${encodeURIComponent(file.path)}`
+          );
+          if (!res.ok) return null;
+          const data = await res.json();
+          return { name: file.name, content: data.content as string };
+        } catch {
+          return null;
         }
-      }
-
-      const res = await fetch('/api/ai/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          prompt: prompt.trim(),
-          scriptType,
-          contextFiles: contextData,
-        }),
       });
 
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || `Request failed (${res.status})`);
-      }
+      const results = await Promise.all(fetchPromises);
+      const contextData = results.filter(
+        (r): r is { name: string; content: string } => r !== null
+      );
 
-      const data = await res.json();
-      setGeneratedCode(data.code || '');
+      // Call the AI generate endpoint with a client-side timeout
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 55000);
+
+      try {
+        const res = await fetch('/api/ai/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            prompt: prompt.trim(),
+            scriptType,
+            contextFiles: contextData,
+          }),
+          signal: controller.signal,
+        });
+
+        clearTimeout(timeout);
+
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(
+            errData.error || `Request failed (${res.status})`
+          );
+        }
+
+        const data = await res.json();
+        // Strip markdown code fences if present
+        let code = data.code || '';
+        code = code.replace(/^```(?:javascript|js)?\n?/i, '').replace(/\n?```$/i, '');
+        setGeneratedCode(code);
+      } catch (fetchErr) {
+        clearTimeout(timeout);
+        if (fetchErr instanceof Error && fetchErr.name === 'AbortError') {
+          throw new Error(
+            'Request timed out. Try a simpler prompt or fewer context files.'
+          );
+        }
+        throw fetchErr;
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to generate script');
     } finally {
@@ -133,6 +226,26 @@ export function ScriptBuilder() {
     await navigator.clipboard.writeText(generatedCode);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleDownload = () => {
+    const blob = new Blob([generatedCode], { type: 'text/javascript' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const typePrefix =
+      scriptType === 'user-event'
+        ? 'ue'
+        : scriptType === 'map-reduce'
+          ? 'mr'
+          : scriptType === 'workflow-action'
+            ? 'wa'
+            : scriptType === 'client'
+              ? 'cs'
+              : scriptType;
+    a.href = url;
+    a.download = `${typePrefix}_generated_script.js`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   if (!config) {
@@ -151,7 +264,7 @@ export function ScriptBuilder() {
   return (
     <div className="flex gap-4 h-[calc(100vh-8rem)]">
       {/* Left Panel — Configuration */}
-      <div className="w-80 shrink-0 border rounded-lg overflow-y-auto flex flex-col">
+      <div className="w-80 shrink-0 border rounded-lg overflow-hidden flex flex-col">
         <div className="p-4 border-b">
           <div className="flex items-center gap-2 mb-1">
             <Wand2 className="h-4 w-4 text-primary" />
@@ -221,7 +334,9 @@ export function ScriptBuilder() {
                             : 'border-muted-foreground/30'
                         )}
                       >
-                        {f.selected && <Check className="h-2 w-2 text-primary-foreground" />}
+                        {f.selected && (
+                          <Check className="h-2 w-2 text-primary-foreground" />
+                        )}
                       </span>
                       {f.name}
                     </span>
@@ -256,7 +371,9 @@ export function ScriptBuilder() {
                             : 'border-muted-foreground/30'
                         )}
                       >
-                        {f.selected && <Check className="h-2 w-2 text-primary-foreground" />}
+                        {f.selected && (
+                          <Check className="h-2 w-2 text-primary-foreground" />
+                        )}
                       </span>
                       {f.name}
                     </span>
@@ -280,7 +397,7 @@ export function ScriptBuilder() {
           </div>
 
           {error && (
-            <div className="p-2 rounded bg-destructive/10 text-destructive text-xs">
+            <div className="p-3 rounded-md bg-destructive/10 border border-destructive/20 text-destructive text-xs leading-relaxed">
               {error}
             </div>
           )}
@@ -320,21 +437,56 @@ export function ScriptBuilder() {
               </Badge>
             )}
           </div>
-          {generatedCode && (
-            <Button variant="ghost" size="sm" onClick={handleCopy}>
-              {copied ? (
-                <>
-                  <Check className="h-3 w-3 mr-1" />
-                  Copied
-                </>
-              ) : (
-                <>
-                  <Copy className="h-3 w-3 mr-1" />
-                  Copy
-                </>
-              )}
-            </Button>
-          )}
+          <div className="flex items-center gap-1">
+            {/* Preview / Code toggle */}
+            {generatedCode && (
+              <>
+                <div className="flex items-center border rounded-md overflow-hidden mr-2">
+                  <button
+                    onClick={() => setViewMode('preview')}
+                    className={cn(
+                      'flex items-center gap-1 px-2 py-1 text-xs transition-colors',
+                      viewMode === 'preview'
+                        ? 'bg-primary text-primary-foreground'
+                        : 'text-muted-foreground hover:bg-muted'
+                    )}
+                  >
+                    <Eye className="h-3 w-3" />
+                    Preview
+                  </button>
+                  <button
+                    onClick={() => setViewMode('code')}
+                    className={cn(
+                      'flex items-center gap-1 px-2 py-1 text-xs transition-colors',
+                      viewMode === 'code'
+                        ? 'bg-primary text-primary-foreground'
+                        : 'text-muted-foreground hover:bg-muted'
+                    )}
+                  >
+                    <Code className="h-3 w-3" />
+                    Raw
+                  </button>
+                </div>
+                <Button variant="ghost" size="sm" onClick={handleDownload}>
+                  <Download className="h-3 w-3 mr-1" />
+                  .js
+                </Button>
+                <Button variant="ghost" size="sm" onClick={handleCopy}>
+                  {copied ? (
+                    <>
+                      <Check className="h-3 w-3 mr-1" />
+                      Copied
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="h-3 w-3 mr-1" />
+                      Copy
+                    </>
+                  )}
+                </Button>
+              </>
+            )}
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto">
@@ -345,15 +497,24 @@ export function ScriptBuilder() {
                 <div>
                   <p className="text-sm font-medium">Generating your script...</p>
                   <p className="text-xs text-muted-foreground mt-1">
-                    Using {selectedCount} context file{selectedCount !== 1 ? 's' : ''} for reference
+                    Using {selectedCount} context file
+                    {selectedCount !== 1 ? 's' : ''} for reference
                   </p>
                 </div>
               </div>
             </div>
           ) : generatedCode ? (
-            <pre className="p-4 text-sm font-mono leading-relaxed overflow-x-auto whitespace-pre">
-              <code>{generatedCode}</code>
-            </pre>
+            viewMode === 'preview' ? (
+              /* Syntax-highlighted preview with line numbers */
+              <div className="p-4 text-sm font-mono leading-relaxed overflow-x-auto bg-[#1a1b26]">
+                {highlightCode(generatedCode)}
+              </div>
+            ) : (
+              /* Raw code view */
+              <pre className="p-4 text-sm font-mono leading-relaxed overflow-x-auto whitespace-pre bg-muted/30">
+                <code>{generatedCode}</code>
+              </pre>
+            )
           ) : (
             <div className="flex items-center justify-center h-full">
               <div className="text-center space-y-2">
@@ -362,7 +523,8 @@ export function ScriptBuilder() {
                   Describe what you need and click Generate
                 </p>
                 <p className="text-xs text-muted-foreground/60">
-                  The AI will use your project&apos;s reference docs and standards as context
+                  The AI will use your project&apos;s reference docs and
+                  standards as context
                 </p>
               </div>
             </div>
