@@ -1,12 +1,12 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { GitBranch, Loader2, AlertCircle, CheckCircle } from 'lucide-react';
+import { Combobox, ComboboxOption } from '@/components/ui/combobox';
+import { GitBranch, Loader2, AlertCircle, CheckCircle, User } from 'lucide-react';
 
 interface RecentRepo {
   owner: string;
@@ -20,8 +20,10 @@ export function RepoSelector() {
   const [owner, setOwner] = useState('');
   const [repo, setRepo] = useState('');
   const [branch, setBranch] = useState('main');
-  const [branches, setBranches] = useState<string[]>([]);
+  const [repos, setRepos] = useState<ComboboxOption[]>([]);
+  const [branchOptions, setBranchOptions] = useState<ComboboxOption[]>([]);
   const [loading, setLoading] = useState(false);
+  const [reposLoading, setReposLoading] = useState(false);
   const [branchLoading, setBranchLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [validationResult, setValidationResult] = useState<{
@@ -30,8 +32,15 @@ export function RepoSelector() {
     missingFolders?: string[];
   } | null>(null);
   const [recentRepos, setRecentRepos] = useState<RecentRepo[]>([]);
+  const [ownerReady, setOwnerReady] = useState(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Load remembered username and recent repos from localStorage
   useEffect(() => {
+    const storedOwner = localStorage.getItem('githubOwner');
+    if (storedOwner) {
+      setOwner(storedOwner);
+    }
     const stored = localStorage.getItem('recentRepos');
     if (stored) {
       try {
@@ -40,16 +49,73 @@ export function RepoSelector() {
         // ignore parse errors
       }
     }
+    setOwnerReady(true);
   }, []);
 
-  const fetchBranches = async (o: string, r: string) => {
-    if (!o || !r) return;
-    setBranchLoading(true);
+  // Fetch repos when owner changes (debounced)
+  const fetchRepos = useCallback(async (username: string) => {
+    if (!username.trim()) {
+      setRepos([]);
+      return;
+    }
+    setReposLoading(true);
     try {
-      const res = await fetch(`/api/repo/branches?owner=${o}&repo=${r}`);
+      const res = await fetch(`/api/repos?owner=${encodeURIComponent(username.trim())}`);
       if (res.ok) {
         const data = await res.json();
-        setBranches(data.branches);
+        setRepos(
+          data.repos.map((r: { name: string; description: string | null }) => ({
+            value: r.name,
+            label: r.name,
+            description: r.description || undefined,
+          }))
+        );
+      } else {
+        setRepos([]);
+      }
+    } catch {
+      setRepos([]);
+    } finally {
+      setReposLoading(false);
+    }
+  }, []);
+
+  // Auto-fetch repos when owner value changes (debounced)
+  useEffect(() => {
+    if (!ownerReady) return;
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (!owner.trim()) {
+      setRepos([]);
+      return;
+    }
+    debounceRef.current = setTimeout(() => {
+      fetchRepos(owner);
+    }, 500);
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [owner, ownerReady, fetchRepos]);
+
+  // Save owner to localStorage when it changes meaningfully
+  useEffect(() => {
+    if (ownerReady && owner.trim()) {
+      localStorage.setItem('githubOwner', owner.trim());
+    }
+  }, [owner, ownerReady]);
+
+  const fetchBranches = useCallback(async (o: string, r: string) => {
+    if (!o || !r) return;
+    setBranchLoading(true);
+    setBranchOptions([]);
+    try {
+      const res = await fetch(`/api/repo/branches?owner=${encodeURIComponent(o)}&repo=${encodeURIComponent(r)}`);
+      if (res.ok) {
+        const data = await res.json();
+        const opts: ComboboxOption[] = data.branches.map((b: string) => ({
+          value: b,
+          label: b,
+        }));
+        setBranchOptions(opts);
         if (data.branches.length > 0 && !data.branches.includes(branch)) {
           setBranch(data.branches[0]);
         }
@@ -59,11 +125,13 @@ export function RepoSelector() {
     } finally {
       setBranchLoading(false);
     }
-  };
+  }, [branch]);
 
-  const handleRepoBlur = () => {
-    if (owner && repo) {
-      fetchBranches(owner, repo);
+  // When repo is selected, auto-fetch branches
+  const handleRepoChange = (value: string) => {
+    setRepo(value);
+    if (owner && value) {
+      fetchBranches(owner, value);
     }
   };
 
@@ -79,7 +147,7 @@ export function RepoSelector() {
 
     try {
       const res = await fetch(
-        `/api/repo/validate?owner=${owner}&repo=${repo}&branch=${branch}`
+        `/api/repo/validate?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}&branch=${encodeURIComponent(branch)}`
       );
       const data = await res.json();
 
@@ -103,6 +171,7 @@ export function RepoSelector() {
       )].slice(0, 5);
       setRecentRepos(updated);
       localStorage.setItem('recentRepos', JSON.stringify(updated));
+      localStorage.setItem('githubOwner', owner.trim());
 
       // Navigate to dashboard
       router.push(`/dashboard?repo=${owner}/${repo}&branch=${branch}`);
@@ -117,6 +186,8 @@ export function RepoSelector() {
     setOwner(recent.owner);
     setRepo(recent.repo);
     setBranch(recent.branch);
+    localStorage.setItem('githubOwner', recent.owner);
+    fetchRepos(recent.owner);
     fetchBranches(recent.owner, recent.repo);
   };
 
@@ -137,49 +208,40 @@ export function RepoSelector() {
           <CardContent className="space-y-4">
             <div className="space-y-2">
               <label className="text-sm font-medium">GitHub Owner / Org</label>
-              <Input
-                placeholder="e.g., gharrison91"
-                value={owner}
-                onChange={(e) => setOwner(e.target.value)}
-                onBlur={handleRepoBlur}
-              />
+              <div className="relative">
+                <User className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+                <Input
+                  placeholder="e.g., gharrison91"
+                  value={owner}
+                  onChange={(e) => setOwner(e.target.value)}
+                  className="pl-9"
+                />
+              </div>
             </div>
 
             <div className="space-y-2">
               <label className="text-sm font-medium">Repository</label>
-              <Input
-                placeholder="e.g., NetSuite-Dashboards"
+              <Combobox
+                options={repos}
                 value={repo}
-                onChange={(e) => setRepo(e.target.value)}
-                onBlur={handleRepoBlur}
+                onValueChange={handleRepoChange}
+                placeholder="Select a repository..."
+                loading={reposLoading}
+                disabled={!owner.trim()}
               />
             </div>
 
             <div className="space-y-2">
               <label className="text-sm font-medium">Branch</label>
-              <Select value={branch} onValueChange={setBranch}>
-                <SelectTrigger>
-                  <div className="flex items-center gap-2">
-                    <GitBranch className="h-4 w-4" />
-                    <SelectValue placeholder="Select branch" />
-                  </div>
-                </SelectTrigger>
-                <SelectContent>
-                  {branchLoading ? (
-                    <SelectItem value="loading" disabled>
-                      Loading branches...
-                    </SelectItem>
-                  ) : branches.length > 0 ? (
-                    branches.map((b) => (
-                      <SelectItem key={b} value={b}>
-                        {b}
-                      </SelectItem>
-                    ))
-                  ) : (
-                    <SelectItem value={branch}>{branch}</SelectItem>
-                  )}
-                </SelectContent>
-              </Select>
+              <Combobox
+                options={branchOptions}
+                value={branch}
+                onValueChange={setBranch}
+                placeholder="Select branch..."
+                loading={branchLoading}
+                disabled={!repo}
+                icon={<GitBranch className="h-4 w-4" />}
+              />
             </div>
 
             {error && (

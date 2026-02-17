@@ -80,6 +80,20 @@ export async function getBranches(owner: string, repo: string) {
   return data.map((b) => b.name);
 }
 
+export async function listUserRepos(username: string) {
+  const octokit = getOctokit();
+  const { data } = await octokit.repos.listForUser({
+    username,
+    per_page: 100,
+    sort: 'updated',
+  });
+  return data.map((r) => ({
+    name: r.name,
+    description: r.description,
+    private: r.private,
+  }));
+}
+
 export async function getRateLimit() {
   const octokit = getOctokit();
   const { data } = await octokit.rateLimit.get();

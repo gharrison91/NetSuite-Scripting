@@ -37,4 +37,5 @@ export const CACHE_TTL = {
   TREE: 5 * 60 * 1000,      // 5 minutes
   FILE: 2 * 60 * 1000,      // 2 minutes
   BRANCHES: 10 * 60 * 1000, // 10 minutes
+  REPOS: 10 * 60 * 1000,    // 10 minutes
 } as const;
