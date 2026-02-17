@@ -28,6 +28,8 @@ import {
   Bot,
   ChevronRight,
   ChevronLeft,
+  Plus,
+  MessageSquare,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -55,31 +57,75 @@ interface ContextFile {
 interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';
-  text: string;         // explanation text (before ---CODE---)
-  code: string | null;  // script code (after ---CODE---)
-  htmlPreview: string | null; // HTML preview (after ---HTML_PREVIEW---)
+  text: string;
+  code: string | null;
+  htmlPreview: string | null;
+}
+
+interface ChatSession {
+  id: string;
+  name: string;
+  scriptType: string;
+  messages: ChatMessage[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+/* ------------------------------------------------------------------ */
+/*  LocalStorage persistence                                           */
+/* ------------------------------------------------------------------ */
+
+const SESSIONS_KEY = 'netsuite-chat-sessions';
+const ACTIVE_KEY = 'netsuite-active-session';
+
+function loadSessions(): ChatSession[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem(SESSIONS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveSessions(sessions: ChatSession[]) {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions));
+  } catch (err) {
+    console.warn('Failed to save sessions to localStorage:', err);
+  }
+}
+
+function loadActiveId(): string | null {
+  if (typeof window === 'undefined') return null;
+  return localStorage.getItem(ACTIVE_KEY);
+}
+
+function saveActiveId(id: string | null) {
+  if (typeof window === 'undefined') return;
+  if (id) {
+    localStorage.setItem(ACTIVE_KEY, id);
+  } else {
+    localStorage.removeItem(ACTIVE_KEY);
+  }
 }
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
 
-/** Parse an AI response into text, code, and optional HTML preview. */
 function parseAiResponse(raw: string): { text: string; code: string | null; htmlPreview: string | null } {
-  // Strip leading/trailing markdown fences
   let cleaned = raw.replace(/^```(?:javascript|js)?\n?/i, '').replace(/\n?```$/i, '');
 
-  // Extract HTML preview if present
   let htmlPreview: string | null = null;
   const htmlIdx = cleaned.indexOf('---HTML_PREVIEW---');
   if (htmlIdx !== -1) {
     htmlPreview = cleaned.slice(htmlIdx + '---HTML_PREVIEW---'.length).trim();
-    // Remove trailing END marker if present
     htmlPreview = htmlPreview.replace(/---END_PREVIEW---\s*$/i, '').trim();
     cleaned = cleaned.slice(0, htmlIdx).trim();
   }
 
-  // Split text vs code on ---CODE--- marker
   const codeIdx = cleaned.indexOf('---CODE---');
   if (codeIdx !== -1) {
     const text = cleaned.slice(0, codeIdx).trim();
@@ -88,7 +134,6 @@ function parseAiResponse(raw: string): { text: string; code: string | null; html
     return { text, code, htmlPreview };
   }
 
-  // No marker — detect if the whole thing looks like code
   const looksLikeCode =
     cleaned.includes('/**') ||
     cleaned.includes('define([') ||
@@ -99,7 +144,6 @@ function parseAiResponse(raw: string): { text: string; code: string | null; html
     return { text: '', code: cleaned, htmlPreview };
   }
 
-  // Check for inline HTML content
   if (!htmlPreview && (/<html[\s>]/i.test(cleaned) || /<!DOCTYPE\s+html/i.test(cleaned))) {
     return { text: '', code: cleaned, htmlPreview: cleaned };
   }
@@ -107,7 +151,6 @@ function parseAiResponse(raw: string): { text: string; code: string | null; html
   return { text: cleaned, code: null, htmlPreview };
 }
 
-/** Simple keyword-based syntax highlighting for SuiteScript. */
 function highlightCode(code: string) {
   const lines = code.split('\n');
   return lines.map((line, i) => {
@@ -139,17 +182,11 @@ function highlightCode(code: string) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Code block component (per-message)                                 */
+/*  Code block component                                               */
 /* ------------------------------------------------------------------ */
 
-function CodeBlock({
-  message,
-  scriptType,
-}: {
-  message: ChatMessage;
-  scriptType: string;
-}) {
-  const [view, setView] = useState<'preview' | 'raw'>(message.htmlPreview ? 'preview' : 'preview');
+function CodeBlock({ message, scriptType }: { message: ChatMessage; scriptType: string }) {
+  const [view, setView] = useState<'preview' | 'raw'>('preview');
   const [copied, setCopied] = useState(false);
 
   const handleCopy = async () => {
@@ -180,7 +217,6 @@ function CodeBlock({
 
   return (
     <div className="border rounded-lg overflow-hidden mt-2">
-      {/* Toolbar */}
       <div className="flex items-center justify-between px-3 py-1.5 bg-muted/50 border-b">
         <div className="flex items-center gap-2">
           <Badge variant="outline" className="text-[10px] px-1.5 py-0">
@@ -214,19 +250,13 @@ function CodeBlock({
             <Download className="h-2.5 w-2.5 mr-1" />.js
           </Button>
           <Button variant="ghost" size="sm" className="h-6 px-2 text-[10px]" onClick={handleCopy}>
-            {copied ? (
-              <><Check className="h-2.5 w-2.5 mr-1" />Copied</>
-            ) : (
-              <><Copy className="h-2.5 w-2.5 mr-1" />Copy</>
-            )}
+            {copied ? <><Check className="h-2.5 w-2.5 mr-1" />Copied</> : <><Copy className="h-2.5 w-2.5 mr-1" />Copy</>}
           </Button>
         </div>
       </div>
 
-      {/* Content */}
       {view === 'preview' ? (
         message.htmlPreview ? (
-          /* Render HTML in sandboxed iframe */
           <div className="bg-white">
             <iframe
               srcDoc={message.htmlPreview}
@@ -235,25 +265,20 @@ function CodeBlock({
               style={{ minHeight: 300 }}
               title="UI Preview"
               onLoad={(e) => {
-                // Auto-resize iframe to content height
                 const iframe = e.target as HTMLIFrameElement;
                 try {
                   const h = iframe.contentDocument?.body?.scrollHeight;
                   if (h) iframe.style.height = `${Math.min(h + 20, 600)}px`;
-                } catch {
-                  // cross-origin — use default height
-                }
+                } catch { /* cross-origin */ }
               }}
             />
           </div>
         ) : (
-          /* Syntax-highlighted code */
           <div className="p-3 text-xs font-mono leading-relaxed overflow-x-auto bg-[#1a1b26] max-h-[500px] overflow-y-auto">
             {highlightCode(message.code)}
           </div>
         )
       ) : (
-        /* Raw code */
         <pre className="p-3 text-xs font-mono leading-relaxed overflow-x-auto whitespace-pre bg-muted/30 max-h-[500px] overflow-y-auto">
           <code>{message.code}</code>
         </pre>
@@ -269,30 +294,82 @@ function CodeBlock({
 export function ScriptBuilder() {
   const { tree, config } = useRepo();
 
+  /* Session state */
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [initialized, setInitialized] = useState(false);
+
   /* Config state */
-  const [scriptType, setScriptType] = useState('user-event');
   const [contextFiles, setContextFiles] = useState<ContextFile[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
   /* Chat state */
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  /* Cached context data (fetched once on first send) */
   const cachedContext = useRef<{ name: string; content: string }[] | null>(null);
-
-  /* Refs */
   const chatEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  /* Auto-scroll to bottom on new messages */
+  /* Derived: active session & messages */
+  const activeSession = sessions.find((s) => s.id === activeId) ?? null;
+  const messages = activeSession?.messages ?? [];
+  const scriptType = activeSession?.scriptType ?? 'user-event';
+
+  /* ---- Persistence ---- */
+
+  // Load from localStorage on mount
+  useEffect(() => {
+    const loaded = loadSessions();
+    const savedId = loadActiveId();
+    if (loaded.length > 0) {
+      setSessions(loaded);
+      if (savedId && loaded.find((s) => s.id === savedId)) {
+        setActiveId(savedId);
+      } else {
+        setActiveId(loaded[loaded.length - 1].id);
+      }
+    }
+    setInitialized(true);
+  }, []);
+
+  // Auto-create first session if none exist
+  useEffect(() => {
+    if (initialized && sessions.length === 0) {
+      const s: ChatSession = {
+        id: crypto.randomUUID(),
+        name: 'New Chat',
+        scriptType: 'user-event',
+        messages: [],
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      setSessions([s]);
+      setActiveId(s.id);
+    }
+  }, [initialized, sessions.length]);
+
+  // Save sessions to localStorage whenever they change
+  useEffect(() => {
+    if (initialized) {
+      saveSessions(sessions);
+    }
+  }, [sessions, initialized]);
+
+  // Save active ID
+  useEffect(() => {
+    if (initialized) {
+      saveActiveId(activeId);
+    }
+  }, [activeId, initialized]);
+
+  /* Auto-scroll */
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, generating]);
+  }, [messages.length, generating]);
 
-  /* Discover reference and standards files from repo tree */
+  /* Discover context files */
   useEffect(() => {
     const files: ContextFile[] = [];
     const refDir = tree.find((n) => n.name === 'reference' && n.type === 'directory');
@@ -326,14 +403,82 @@ export function ScriptBuilder() {
 
   const toggleContext = useCallback((path: string) => {
     setContextFiles((prev) => prev.map((f) => (f.path === path ? { ...f, selected: !f.selected } : f)));
-    cachedContext.current = null; // invalidate cache on toggle
+    cachedContext.current = null;
   }, []);
 
   const selectedCount = useMemo(() => contextFiles.filter((f) => f.selected).length, [contextFiles]);
 
+  /* ---- Session management ---- */
+
+  const createSession = useCallback(() => {
+    const s: ChatSession = {
+      id: crypto.randomUUID(),
+      name: 'New Chat',
+      scriptType: 'user-event',
+      messages: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    setSessions((prev) => [...prev, s]);
+    setActiveId(s.id);
+    setError(null);
+    setInput('');
+    cachedContext.current = null;
+  }, []);
+
+  const switchSession = useCallback((id: string) => {
+    setActiveId(id);
+    setError(null);
+    setInput('');
+    cachedContext.current = null;
+  }, []);
+
+  const deleteSession = useCallback(
+    (id: string) => {
+      setSessions((prev) => {
+        const next = prev.filter((s) => s.id !== id);
+        if (activeId === id) {
+          const newActive = next.length > 0 ? next[next.length - 1].id : null;
+          setActiveId(newActive);
+        }
+        return next;
+      });
+    },
+    [activeId]
+  );
+
+  const updateScriptType = useCallback(
+    (type: string) => {
+      if (!activeId) return;
+      setSessions((prev) =>
+        prev.map((s) => (s.id === activeId ? { ...s, scriptType: type, updatedAt: Date.now() } : s))
+      );
+    },
+    [activeId]
+  );
+
+  const addMessage = useCallback(
+    (msg: ChatMessage) => {
+      if (!activeId) return;
+      setSessions((prev) =>
+        prev.map((s) => {
+          if (s.id !== activeId) return s;
+          const isFirst = s.messages.length === 0 && msg.role === 'user';
+          return {
+            ...s,
+            messages: [...s.messages, msg],
+            name: isFirst ? msg.text.slice(0, 50) + (msg.text.length > 50 ? '...' : '') : s.name,
+            updatedAt: Date.now(),
+          };
+        })
+      );
+    },
+    [activeId]
+  );
+
   /* ---- Send message ---- */
   const handleSend = async () => {
-    if (!input.trim() || generating || !config) return;
+    if (!input.trim() || generating || !config || !activeId) return;
 
     const userMsg: ChatMessage = {
       id: crypto.randomUUID(),
@@ -343,13 +488,12 @@ export function ScriptBuilder() {
       htmlPreview: null,
     };
 
-    setMessages((prev) => [...prev, userMsg]);
+    addMessage(userMsg);
     setInput('');
     setGenerating(true);
     setError(null);
 
     try {
-      // Fetch context files if not cached
       if (!cachedContext.current) {
         const selected = contextFiles.filter((f) => f.selected);
         const results = await Promise.all(
@@ -369,7 +513,6 @@ export function ScriptBuilder() {
         cachedContext.current = results.filter((r): r is { name: string; content: string } => r !== null);
       }
 
-      // Build messages for API (user text + assistant full raw for context)
       const apiMessages = [...messages, userMsg].map((m) => ({
         role: m.role,
         content: m.role === 'user' ? m.text : [m.text, m.code].filter(Boolean).join('\n\n'),
@@ -400,15 +543,13 @@ export function ScriptBuilder() {
         const data = await res.json();
         const parsed = parseAiResponse(data.code || '');
 
-        const assistantMsg: ChatMessage = {
+        addMessage({
           id: crypto.randomUUID(),
           role: 'assistant',
           text: parsed.text,
           code: parsed.code,
           htmlPreview: parsed.htmlPreview,
-        };
-
-        setMessages((prev) => [...prev, assistantMsg]);
+        });
       } catch (fetchErr) {
         clearTimeout(timeout);
         if (fetchErr instanceof Error && fetchErr.name === 'AbortError') {
@@ -420,7 +561,6 @@ export function ScriptBuilder() {
       setError(err instanceof Error ? err.message : 'Failed to generate');
     } finally {
       setGenerating(false);
-      // Refocus input
       setTimeout(() => inputRef.current?.focus(), 100);
     }
   };
@@ -430,13 +570,6 @@ export function ScriptBuilder() {
       e.preventDefault();
       handleSend();
     }
-  };
-
-  const handleNewChat = () => {
-    setMessages([]);
-    setError(null);
-    setInput('');
-    cachedContext.current = null;
   };
 
   /* ---- Guard ---- */
@@ -462,7 +595,6 @@ export function ScriptBuilder() {
           sidebarOpen ? 'w-64' : 'w-10'
         )}
       >
-        {/* Toggle button */}
         <button
           onClick={() => setSidebarOpen((o) => !o)}
           className="p-2 border-b hover:bg-muted transition-colors flex items-center justify-center"
@@ -473,7 +605,7 @@ export function ScriptBuilder() {
         {sidebarOpen && (
           <>
             <div className="p-3 border-b">
-              <div className="flex items-center gap-2 mb-1">
+              <div className="flex items-center gap-2">
                 <Wand2 className="h-3.5 w-3.5 text-primary" />
                 <h2 className="text-xs font-semibold">Script Builder</h2>
               </div>
@@ -485,7 +617,7 @@ export function ScriptBuilder() {
                 <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
                   Script Type
                 </label>
-                <Select value={scriptType} onValueChange={setScriptType}>
+                <Select value={scriptType} onValueChange={updateScriptType}>
                   <SelectTrigger className="w-full h-8 text-xs">
                     <SelectValue />
                   </SelectTrigger>
@@ -574,17 +706,64 @@ export function ScriptBuilder() {
                   </div>
                 )}
               </div>
-            </div>
 
-            {/* New Chat */}
-            {messages.length > 0 && (
-              <div className="p-3 border-t">
-                <Button variant="outline" size="sm" className="w-full text-xs h-7" onClick={handleNewChat}>
-                  <Trash2 className="h-3 w-3 mr-1.5" />
+              {/* Sessions */}
+              <div className="space-y-1.5 pt-2 border-t">
+                <div className="flex items-center justify-between">
+                  <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+                    Sessions
+                  </label>
+                  <Badge variant="secondary" className="text-[10px] px-1 py-0 h-4">
+                    {sessions.length}
+                  </Badge>
+                </div>
+
+                <div className="space-y-0.5 max-h-48 overflow-y-auto">
+                  {sessions
+                    .slice()
+                    .sort((a, b) => b.updatedAt - a.updatedAt)
+                    .map((s) => (
+                      <div
+                        key={s.id}
+                        onClick={() => switchSession(s.id)}
+                        className={cn(
+                          'flex items-center gap-1.5 px-1.5 py-1.5 rounded text-[11px] cursor-pointer group transition-colors',
+                          s.id === activeId
+                            ? 'bg-primary/10 text-primary'
+                            : 'text-muted-foreground hover:bg-muted'
+                        )}
+                      >
+                        <MessageSquare className="h-2.5 w-2.5 shrink-0" />
+                        <span className="truncate flex-1">{s.name}</span>
+                        <span className="text-[9px] text-muted-foreground/50 shrink-0">
+                          {s.messages.length}
+                        </span>
+                        {sessions.length > 1 && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              deleteSession(s.id);
+                            }}
+                            className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                          >
+                            <Trash2 className="h-2.5 w-2.5 text-muted-foreground hover:text-destructive" />
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                </div>
+
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-full text-[11px] h-7"
+                  onClick={createSession}
+                >
+                  <Plus className="h-2.5 w-2.5 mr-1" />
                   New Chat
                 </Button>
               </div>
-            )}
+            </div>
           </>
         )}
       </div>
@@ -638,14 +817,11 @@ export function ScriptBuilder() {
                         : 'bg-muted/40 px-3 py-2 flex-1'
                     )}
                   >
-                    {/* Text content */}
                     {msg.text && (
-                      <p className={cn('text-sm leading-relaxed whitespace-pre-wrap', msg.role === 'assistant' && 'mb-2')}>
+                      <p className={cn('text-sm leading-relaxed whitespace-pre-wrap', msg.role === 'assistant' && msg.code && 'mb-2')}>
                         {msg.text}
                       </p>
                     )}
-
-                    {/* Code block */}
                     {msg.code && msg.role === 'assistant' && (
                       <CodeBlock message={msg} scriptType={scriptType} />
                     )}
@@ -659,7 +835,6 @@ export function ScriptBuilder() {
                 </div>
               ))}
 
-              {/* Generating indicator */}
               {generating && (
                 <div className="flex gap-3 justify-start">
                   <div className="shrink-0 w-7 h-7 rounded-full bg-primary/10 flex items-center justify-center mt-0.5">
@@ -676,7 +851,6 @@ export function ScriptBuilder() {
             </>
           )}
 
-          {/* Error */}
           {error && (
             <div className="mx-auto max-w-md p-3 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive text-xs text-center">
               {error}
@@ -697,10 +871,7 @@ export function ScriptBuilder() {
               placeholder="Describe what you need... (Enter to send, Shift+Enter for newline)"
               rows={1}
               className="flex-1 resize-none rounded-lg border bg-transparent px-3 py-2 text-sm placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring min-h-[40px] max-h-[120px]"
-              style={{
-                height: 'auto',
-                overflow: input.split('\n').length > 3 ? 'auto' : 'hidden',
-              }}
+              style={{ height: 'auto', overflow: input.split('\n').length > 3 ? 'auto' : 'hidden' }}
               onInput={(e) => {
                 const t = e.target as HTMLTextAreaElement;
                 t.style.height = 'auto';
@@ -713,11 +884,7 @@ export function ScriptBuilder() {
               size="sm"
               className="h-10 w-10 p-0 shrink-0"
             >
-              {generating ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Send className="h-4 w-4" />
-              )}
+              {generating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
             </Button>
           </div>
           <p className="text-[10px] text-muted-foreground mt-1.5 text-center">
