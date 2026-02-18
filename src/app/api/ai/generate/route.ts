@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 
 // Allow up to 60 seconds for AI generation on Vercel
 export const maxDuration = 60;
@@ -12,6 +12,11 @@ const SCRIPT_TYPE_LABELS: Record<string, string> = {
   'map-reduce': 'MapReduceScript',
   'workflow-action': 'WorkflowActionScript',
 };
+
+// Rough token estimate: ~4 chars per token
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
 
 function buildSystemPrompt(
   scriptType: string,
@@ -57,11 +62,16 @@ function buildSystemPrompt(
 `;
 
   if (contextFiles.length > 0) {
+    // Budget: keep total context under ~40K chars (~10K tokens)
+    const MAX_TOTAL_CONTEXT = 40000;
+    const perFileLimit = Math.floor(MAX_TOTAL_CONTEXT / contextFiles.length);
+    const limit = Math.min(perFileLimit, 5000); // cap per file at 5K chars
+
     prompt += '\n## Project Context\nUse the following reference material from this project:\n\n';
     for (const file of contextFiles) {
       const truncated =
-        file.content.length > 8000
-          ? file.content.slice(0, 8000) + '\n\n[... truncated for length]'
+        file.content.length > limit
+          ? file.content.slice(0, limit) + '\n\n[... truncated for length]'
           : file.content;
       prompt += `### ${file.name}\n${truncated}\n\n`;
     }
@@ -73,7 +83,7 @@ function buildSystemPrompt(
 export async function POST(request: NextRequest) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey || apiKey === 'your_api_key_here') {
-    return NextResponse.json(
+    return Response.json(
       { error: 'ANTHROPIC_API_KEY not configured. Add it in Vercel project settings under Environment Variables.' },
       { status: 500 }
     );
@@ -86,11 +96,13 @@ export async function POST(request: NextRequest) {
       prompt,
       scriptType,
       contextFiles = [],
+      stream: wantStream = false,
     }: {
       messages?: { role: string; content: string }[];
       prompt?: string;
       scriptType: string;
       contextFiles: { name: string; content: string }[];
+      stream?: boolean;
     } = body;
 
     // Support both multi-turn messages and legacy single prompt
@@ -103,22 +115,108 @@ export async function POST(request: NextRequest) {
     } else if (prompt) {
       apiMessages = [{ role: 'user', content: prompt }];
     } else {
-      return NextResponse.json(
+      return Response.json(
         { error: 'messages or prompt is required' },
         { status: 400 }
       );
     }
 
     if (!scriptType) {
-      return NextResponse.json(
+      return Response.json(
         { error: 'scriptType is required' },
         { status: 400 }
       );
     }
 
+    // Trim conversation history to keep token usage reasonable
+    // Keep system prompt + last 10 messages max
+    if (apiMessages.length > 10) {
+      const kept = apiMessages.slice(-10);
+      // Ensure first message is from user (Anthropic requires it)
+      if (kept[0].role !== 'user') {
+        kept.shift();
+      }
+      apiMessages = kept;
+    }
+
     const systemPrompt = buildSystemPrompt(scriptType, contextFiles);
 
-    // 50-second timeout for the Anthropic API call
+    // Log token estimates for debugging
+    const systemTokens = estimateTokens(systemPrompt);
+    const messageTokens = apiMessages.reduce((sum, m) => sum + estimateTokens(m.content), 0);
+    console.log(`[AI Generate] System: ~${systemTokens} tokens, Messages: ~${messageTokens} tokens, Total: ~${systemTokens + messageTokens} tokens`);
+
+    if (wantStream) {
+      // ---- Streaming mode ----
+      const anthropicRes = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-5-20250929',
+          max_tokens: 8192,
+          stream: true,
+          system: systemPrompt,
+          messages: apiMessages,
+        }),
+      });
+
+      if (!anthropicRes.ok) {
+        const errBody = await anthropicRes.text();
+        console.error('Anthropic API error:', anthropicRes.status, errBody);
+
+        if (anthropicRes.status === 401) {
+          return Response.json(
+            { error: 'Invalid Anthropic API key. Check your ANTHROPIC_API_KEY in Vercel environment variables.' },
+            { status: 401 }
+          );
+        }
+        if (anthropicRes.status === 429) {
+          return Response.json(
+            { error: 'Rate limited by Anthropic API. Wait a moment and try again.' },
+            { status: 429 }
+          );
+        }
+        return Response.json(
+          { error: `Anthropic API error (${anthropicRes.status}). Check server logs for details.` },
+          { status: 502 }
+        );
+      }
+
+      // Forward the SSE stream to the client
+      const stream = new ReadableStream({
+        async start(controller) {
+          const reader = anthropicRes.body!.getReader();
+          const decoder = new TextDecoder();
+
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              const chunk = decoder.decode(value, { stream: true });
+              controller.enqueue(new TextEncoder().encode(chunk));
+            }
+          } catch (err) {
+            console.error('[AI Stream] Error:', err);
+          } finally {
+            controller.close();
+          }
+        },
+      });
+
+      return new Response(stream, {
+        headers: {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          Connection: 'keep-alive',
+        },
+      });
+    }
+
+    // ---- Non-streaming mode (legacy) ----
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 50000);
 
@@ -146,18 +244,18 @@ export async function POST(request: NextRequest) {
         console.error('Anthropic API error:', response.status, errBody);
 
         if (response.status === 401) {
-          return NextResponse.json(
+          return Response.json(
             { error: 'Invalid Anthropic API key. Check your ANTHROPIC_API_KEY in Vercel environment variables.' },
             { status: 401 }
           );
         }
         if (response.status === 429) {
-          return NextResponse.json(
+          return Response.json(
             { error: 'Rate limited by Anthropic API. Wait a moment and try again.' },
             { status: 429 }
           );
         }
-        return NextResponse.json(
+        return Response.json(
           { error: `Anthropic API error (${response.status}). Check server logs for details.` },
           { status: 502 }
         );
@@ -167,11 +265,11 @@ export async function POST(request: NextRequest) {
       const rawText =
         data.content?.[0]?.type === 'text' ? data.content[0].text : '';
 
-      return NextResponse.json({ code: rawText });
+      return Response.json({ code: rawText });
     } catch (fetchErr) {
       clearTimeout(timeout);
       if (fetchErr instanceof Error && fetchErr.name === 'AbortError') {
-        return NextResponse.json(
+        return Response.json(
           { error: 'AI generation timed out. Try a simpler prompt or fewer context files.' },
           { status: 504 }
         );
@@ -180,7 +278,7 @@ export async function POST(request: NextRequest) {
     }
   } catch (err) {
     console.error('Generate error:', err);
-    return NextResponse.json(
+    return Response.json(
       { error: err instanceof Error ? err.message : 'Failed to generate script' },
       { status: 500 }
     );

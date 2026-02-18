@@ -1,23 +1,23 @@
 'use client';
 
-import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef, Component, ReactNode } from 'react';
 import { useRepo } from '@/hooks/use-repo';
 import { MarkdownRenderer } from '@/components/shared/markdown-renderer';
 import { EmptyState } from '@/components/shared/empty-state';
 import { ContentSkeleton } from '@/components/shared/loading-skeleton';
 import { Button } from '@/components/ui/button';
-import { BookOpen, RefreshCw, ExternalLink, AlertTriangle } from 'lucide-react';
+import { BookOpen, RefreshCw, ExternalLink, AlertTriangle, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 export function ReferenceViewer() {
-  const { tree, config } = useRepo();
+  const { tree, config, loading: repoLoading } = useRepo();
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [content, setContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
   const [lastFetchUrl, setLastFetchUrl] = useState<string | null>(null);
   const [renderError, setRenderError] = useState(false);
-  const autoLoaded = useRef(false);
+  const hasAutoLoaded = useRef(false);
 
   const files = useMemo(() => {
     const refDir = tree.find((n) => n.name === 'reference' && n.type === 'directory');
@@ -79,19 +79,35 @@ export function ReferenceViewer() {
     [config]
   );
 
-  // Auto-load first file once
+  // Auto-load first file when ready — retry when files/config change
   useEffect(() => {
-    if (files.length > 0 && config && !autoLoaded.current) {
-      autoLoaded.current = true;
+    if (files.length > 0 && config && !hasAutoLoaded.current) {
+      hasAutoLoaded.current = true;
       loadFile(files[0].path);
     }
   }, [files, config, loadFile]);
+
+  // Reset auto-load flag when component unmounts (e.g., switching views)
+  useEffect(() => {
+    return () => {
+      hasAutoLoaded.current = false;
+    };
+  }, []);
+
+  // If repo is still loading, show skeleton
+  if (repoLoading) {
+    return <ContentSkeleton />;
+  }
 
   if (files.length === 0) {
     return (
       <EmptyState
         title="No Reference Docs"
-        description="No files found in the reference/ directory."
+        description={
+          tree.length === 0
+            ? 'Repository tree is still loading...'
+            : 'No markdown files found in the reference/ directory.'
+        }
         icon={BookOpen}
       />
     );
@@ -120,7 +136,13 @@ export function ReferenceViewer() {
 
       <div className="flex-1 border rounded-lg overflow-y-auto p-6">
         {loading ? (
-          <ContentSkeleton />
+          <div className="space-y-4">
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              Loading {selectedFile?.split('/').pop()}...
+            </div>
+            <ContentSkeleton />
+          </div>
         ) : fileError ? (
           <div className="flex flex-col items-center justify-center h-full gap-4">
             <AlertTriangle className="h-8 w-8 text-destructive/60" />
@@ -159,7 +181,6 @@ export function ReferenceViewer() {
           </div>
         ) : content ? (
           renderError ? (
-            /* Fallback: show raw content if MarkdownRenderer crashes */
             <div>
               <div className="p-2 mb-3 bg-amber-500/10 border border-amber-500/20 rounded text-xs text-amber-600">
                 Markdown rendering failed. Showing raw content.
@@ -173,18 +194,28 @@ export function ReferenceViewer() {
             />
           )
         ) : (
-          <p className="text-sm text-muted-foreground">Select a document to view.</p>
+          <div className="flex flex-col items-center justify-center h-full gap-3 text-muted-foreground">
+            <BookOpen className="h-8 w-8 opacity-30" />
+            <p className="text-sm">Select a document from the sidebar to view.</p>
+            {files.length > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => loadFile(files[0].path)}
+              >
+                Load {files[0].name.replace('.md', '').replace(/-/g, ' ')}
+              </Button>
+            )}
+          </div>
         )}
       </div>
     </div>
   );
 }
 
-/**
- * Wrapper that catches MarkdownRenderer errors and falls back to raw text.
- * Uses componentDidCatch via a class-based error boundary.
- */
-import { Component, ReactNode } from 'react';
+/* ------------------------------------------------------------------ */
+/*  Error boundary for MarkdownRenderer                                */
+/* ------------------------------------------------------------------ */
 
 class MarkdownErrorBoundary extends Component<
   { children: ReactNode; fallback: ReactNode },

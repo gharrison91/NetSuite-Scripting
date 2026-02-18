@@ -30,6 +30,7 @@ import {
   ChevronLeft,
   Plus,
   MessageSquare,
+  StopCircle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -149,6 +150,26 @@ function parseAiResponse(raw: string): { text: string; code: string | null; html
   }
 
   return { text: cleaned, code: null, htmlPreview };
+}
+
+/** Parse Anthropic SSE stream and extract text deltas */
+function parseSSEDelta(chunk: string): string {
+  let text = '';
+  const lines = chunk.split('\n');
+  for (const line of lines) {
+    if (!line.startsWith('data: ')) continue;
+    const jsonStr = line.slice(6).trim();
+    if (jsonStr === '[DONE]') continue;
+    try {
+      const event = JSON.parse(jsonStr);
+      if (event.type === 'content_block_delta' && event.delta?.text) {
+        text += event.delta.text;
+      }
+    } catch {
+      // Skip malformed JSON
+    }
+  }
+  return text;
 }
 
 function highlightCode(code: string) {
@@ -306,11 +327,13 @@ export function ScriptBuilder() {
   /* Chat state */
   const [input, setInput] = useState('');
   const [generating, setGenerating] = useState(false);
+  const [streamingText, setStreamingText] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   const cachedContext = useRef<{ name: string; content: string }[] | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   /* Derived: active session & messages */
   const activeSession = sessions.find((s) => s.id === activeId) ?? null;
@@ -367,7 +390,7 @@ export function ScriptBuilder() {
   /* Auto-scroll */
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages.length, generating]);
+  }, [messages.length, generating, streamingText]);
 
   /* Discover context files */
   useEffect(() => {
@@ -476,7 +499,15 @@ export function ScriptBuilder() {
     [activeId]
   );
 
-  /* ---- Send message ---- */
+  /* ---- Stop generation ---- */
+  const handleStop = useCallback(() => {
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
+  }, []);
+
+  /* ---- Send message (streaming) ---- */
   const handleSend = async () => {
     if (!input.trim() || generating || !config || !activeId) return;
 
@@ -491,9 +522,11 @@ export function ScriptBuilder() {
     addMessage(userMsg);
     setInput('');
     setGenerating(true);
+    setStreamingText('');
     setError(null);
 
     try {
+      // Fetch context files if not cached
       if (!cachedContext.current) {
         const selected = contextFiles.filter((f) => f.selected);
         const results = await Promise.all(
@@ -518,52 +551,83 @@ export function ScriptBuilder() {
         content: m.role === 'user' ? m.text : [m.text, m.code].filter(Boolean).join('\n\n'),
       }));
 
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 55000);
+      const abortController = new AbortController();
+      abortRef.current = abortController;
 
-      try {
-        const res = await fetch('/api/ai/generate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            messages: apiMessages,
-            scriptType,
-            contextFiles: cachedContext.current,
-          }),
-          signal: controller.signal,
-        });
+      const res = await fetch('/api/ai/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: apiMessages,
+          scriptType,
+          contextFiles: cachedContext.current,
+          stream: true,
+        }),
+        signal: abortController.signal,
+      });
 
-        clearTimeout(timeout);
-
-        if (!res.ok) {
-          const errData = await res.json().catch(() => ({}));
-          throw new Error(errData.error || `Request failed (${res.status})`);
-        }
-
-        const data = await res.json();
-        const parsed = parseAiResponse(data.code || '');
-
-        addMessage({
-          id: crypto.randomUUID(),
-          role: 'assistant',
-          text: parsed.text,
-          code: parsed.code,
-          htmlPreview: parsed.htmlPreview,
-        });
-      } catch (fetchErr) {
-        clearTimeout(timeout);
-        if (fetchErr instanceof Error && fetchErr.name === 'AbortError') {
-          throw new Error('Request timed out. Try a simpler prompt or fewer context files.');
-        }
-        throw fetchErr;
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `Request failed (${res.status})`);
       }
+
+      // Read SSE stream
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      let fullText = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        const delta = parseSSEDelta(chunk);
+        if (delta) {
+          fullText += delta;
+          setStreamingText(fullText);
+        }
+      }
+
+      // Parse completed response
+      const parsed = parseAiResponse(fullText);
+      addMessage({
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        text: parsed.text,
+        code: parsed.code,
+        htmlPreview: parsed.htmlPreview,
+      });
+
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to generate');
+      if (err instanceof Error && err.name === 'AbortError') {
+        // User cancelled — save partial response if we had one
+        const currentStreaming = fullTextRef.current;
+        if (currentStreaming) {
+          const parsed = parseAiResponse(currentStreaming);
+          addMessage({
+            id: crypto.randomUUID(),
+            role: 'assistant',
+            text: parsed.text || '(generation stopped)',
+            code: parsed.code,
+            htmlPreview: parsed.htmlPreview,
+          });
+        }
+      } else {
+        setError(err instanceof Error ? err.message : 'Failed to generate');
+      }
     } finally {
       setGenerating(false);
+      setStreamingText('');
+      abortRef.current = null;
       setTimeout(() => inputRef.current?.focus(), 100);
     }
   };
+
+  // Track streaming text in a ref so abort handler can access it
+  const fullTextRef = useRef('');
+  useEffect(() => {
+    fullTextRef.current = streamingText;
+  }, [streamingText]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -835,16 +899,21 @@ export function ScriptBuilder() {
                 </div>
               ))}
 
+              {/* Streaming response */}
               {generating && (
                 <div className="flex gap-3 justify-start">
                   <div className="shrink-0 w-7 h-7 rounded-full bg-primary/10 flex items-center justify-center mt-0.5">
                     <Bot className="h-3.5 w-3.5 text-primary" />
                   </div>
-                  <div className="bg-muted/40 rounded-lg px-4 py-3">
-                    <div className="flex items-center gap-2">
-                      <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
-                      <span className="text-xs text-muted-foreground">Generating...</span>
-                    </div>
+                  <div className="bg-muted/40 rounded-lg px-3 py-2 flex-1">
+                    {streamingText ? (
+                      <p className="text-sm leading-relaxed whitespace-pre-wrap">{streamingText}</p>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
+                        <span className="text-xs text-muted-foreground">Generating...</span>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
@@ -878,14 +947,25 @@ export function ScriptBuilder() {
                 t.style.height = `${Math.min(t.scrollHeight, 120)}px`;
               }}
             />
-            <Button
-              onClick={handleSend}
-              disabled={generating || !input.trim()}
-              size="sm"
-              className="h-10 w-10 p-0 shrink-0"
-            >
-              {generating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-            </Button>
+            {generating ? (
+              <Button
+                onClick={handleStop}
+                variant="destructive"
+                size="sm"
+                className="h-10 w-10 p-0 shrink-0"
+              >
+                <StopCircle className="h-4 w-4" />
+              </Button>
+            ) : (
+              <Button
+                onClick={handleSend}
+                disabled={!input.trim()}
+                size="sm"
+                className="h-10 w-10 p-0 shrink-0"
+              >
+                <Send className="h-4 w-4" />
+              </Button>
+            )}
           </div>
           <p className="text-[10px] text-muted-foreground mt-1.5 text-center">
             {selectedCount} context file{selectedCount !== 1 ? 's' : ''} selected
