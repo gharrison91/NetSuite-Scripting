@@ -71,7 +71,9 @@ export function MarkdownRenderer({ content, enableTableParsing = false }: Markdo
             </a>
           ),
         }}
-      />
+      >
+        {content}
+      </ReactMarkdown>
     </div>
   );
 }
