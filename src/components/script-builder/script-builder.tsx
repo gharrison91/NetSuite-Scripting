@@ -40,6 +40,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { analyzeScript, type ScriptAnalysis, type FieldOperation } from '@/lib/script-analyzer';
+import { RelationshipView } from './relationship-view';
 
 /* ------------------------------------------------------------------ */
 /*  Constants & types                                                  */
@@ -561,6 +562,7 @@ export function ScriptBuilder() {
   const [streamingTexts, setStreamingTexts] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [input, setInput] = useState('');
+  const [topView, setTopView] = useState<'chat' | 'code' | 'relationship'>('chat');
 
   const abortControllers = useRef<Record<string, AbortController>>({});
   const cachedContext = useRef<{ name: string; content: string }[] | null>(null);
@@ -573,6 +575,18 @@ export function ScriptBuilder() {
   const scriptType = activeSession?.scriptType ?? 'user-event';
   const isActiveGenerating = activeId ? generatingSet.has(activeId) : false;
   const activeStreamingText = activeId ? streamingTexts[activeId] || '' : '';
+
+  /* Latest code from this session (for persistent code/relationship views) */
+  const latestCode = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].code) return messages[i].code;
+    }
+    return null;
+  }, [messages]);
+
+  const latestAnalysis = useMemo(() => {
+    return latestCode ? analyzeScript(latestCode) : null;
+  }, [latestCode]);
 
   /* ---- Persistence ---- */
 
@@ -1137,7 +1151,70 @@ export function ScriptBuilder() {
 
       {/* ---- Chat area ---- */}
       <div className="flex-1 flex flex-col ml-4 border rounded-lg overflow-hidden">
-        {/* Messages */}
+        {/* Persistent view buttons */}
+        <div className="flex items-center gap-1 px-3 py-2 border-b bg-muted/30 shrink-0">
+          <div className="flex items-center border rounded-md overflow-hidden">
+            <button
+              onClick={() => setTopView('chat')}
+              className={cn(
+                'flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors',
+                topView === 'chat' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'
+              )}
+            >
+              <MessageSquare className="h-3.5 w-3.5" />
+              Chat
+            </button>
+            <button
+              onClick={() => setTopView('code')}
+              className={cn(
+                'flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors',
+                topView === 'code' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'
+              )}
+            >
+              <Eye className="h-3.5 w-3.5" />
+              Code View
+            </button>
+            <button
+              onClick={() => setTopView('relationship')}
+              className={cn(
+                'flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors',
+                topView === 'relationship' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'
+              )}
+            >
+              <Activity className="h-3.5 w-3.5" />
+              Relationship
+            </button>
+          </div>
+          {latestCode && topView !== 'chat' && (
+            <span className="text-[10px] text-muted-foreground ml-2">
+              Showing latest generated code
+            </span>
+          )}
+        </div>
+
+        {/* View content */}
+        {topView === 'code' ? (
+          <div className="flex-1 overflow-auto">
+            {latestCode ? (
+              <div className="p-3 text-xs font-mono leading-relaxed overflow-x-auto bg-[#1a1b26] min-h-full">
+                {highlightCode(latestCode)}
+              </div>
+            ) : (
+              <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
+                <div className="text-center space-y-2">
+                  <Eye className="h-8 w-8 mx-auto text-muted-foreground/30" />
+                  <p>No code generated yet.</p>
+                  <p className="text-xs">Switch to Chat, describe the script you need, and the code will appear here.</p>
+                </div>
+              </div>
+            )}
+          </div>
+        ) : topView === 'relationship' ? (
+          <div className="flex-1 relative">
+            <RelationshipView analysis={latestAnalysis} />
+          </div>
+        ) : (
+        /* Messages (chat view) */
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           {messages.length === 0 && !isActiveGenerating ? (
             <div className="flex items-center justify-center h-full">
@@ -1235,6 +1312,7 @@ export function ScriptBuilder() {
 
           <div ref={chatEndRef} />
         </div>
+        )}
 
         {/* Input bar */}
         <div className="border-t p-3">
