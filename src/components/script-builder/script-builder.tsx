@@ -37,6 +37,8 @@ import {
   Hash,
   Boxes,
   Search,
+  PanelRightClose,
+  PanelRightOpen,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { analyzeScript, type ScriptAnalysis, type FieldOperation } from '@/lib/script-analyzer';
@@ -563,6 +565,7 @@ export function ScriptBuilder() {
   const [error, setError] = useState<string | null>(null);
   const [input, setInput] = useState('');
   const [topView, setTopView] = useState<'chat' | 'code' | 'relationship'>('chat');
+  const [logicPanelOpen, setLogicPanelOpen] = useState(false);
 
   const abortControllers = useRef<Record<string, AbortController>>({});
   const cachedContext = useRef<{ name: string; content: string }[] | null>(null);
@@ -1202,9 +1205,25 @@ export function ScriptBuilder() {
               Showing latest generated code
             </span>
           )}
+          {latestAnalysis && (
+            <button
+              onClick={() => setLogicPanelOpen((o) => !o)}
+              className={cn(
+                'flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-md border transition-colors ml-auto',
+                logicPanelOpen
+                  ? 'bg-primary text-primary-foreground border-primary'
+                  : 'text-muted-foreground hover:bg-muted border-transparent'
+              )}
+            >
+              {logicPanelOpen ? <PanelRightClose className="h-3.5 w-3.5" /> : <PanelRightOpen className="h-3.5 w-3.5" />}
+              Logic
+            </button>
+          )}
         </div>
 
-        {/* View content */}
+        {/* View content + optional logic panel */}
+        <div className="flex-1 flex overflow-hidden">
+        <div className={cn('flex-1 flex flex-col overflow-hidden', logicPanelOpen && 'min-w-0')}>
         {topView === 'code' ? (
           <div className="flex-1 overflow-auto">
             {latestCode ? (
@@ -1325,6 +1344,15 @@ export function ScriptBuilder() {
           <div ref={chatEndRef} />
         </div>
         )}
+        </div>
+
+        {/* Logic panel */}
+        {logicPanelOpen && latestAnalysis && (
+          <div className="w-72 border-l overflow-y-auto shrink-0">
+            <ScriptAnalysisView analysis={latestAnalysis} />
+          </div>
+        )}
+        </div>
 
         {/* Input bar */}
         <div className="border-t p-3">
