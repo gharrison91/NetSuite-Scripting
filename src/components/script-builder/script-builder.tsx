@@ -590,6 +590,54 @@ export function ScriptBuilder() {
     setInitialized(true);
   }, []);
 
+  /* ---- Pick up editScript from sessionStorage (Edit in Builder flow) ---- */
+  useEffect(() => {
+    if (!initialized) return;
+    try {
+      const raw = sessionStorage.getItem('scriptBuilder:editScript');
+      if (!raw) return;
+      sessionStorage.removeItem('scriptBuilder:editScript');
+      const editData = JSON.parse(raw) as {
+        code: string;
+        filename: string;
+        scriptType: string;
+        path: string;
+      };
+
+      // Create a new session with the existing script pre-loaded
+      const editSession: ChatSession = {
+        id: crypto.randomUUID(),
+        name: `Edit: ${editData.filename}`,
+        scriptType: editData.scriptType || 'user-event',
+        messages: [
+          {
+            id: crypto.randomUUID(),
+            role: 'user',
+            text: `I want to edit this existing script: **${editData.filename}** (from \`${editData.path}\`).\n\nHere's the current code — what changes would you like to make?`,
+            code: null,
+            htmlPreview: null,
+          },
+          {
+            id: crypto.randomUUID(),
+            role: 'assistant',
+            text: `I've loaded **${editData.filename}**. Here's the current code. Tell me what changes you'd like to make — I can refactor, add features, fix bugs, or modify field logic.`,
+            code: editData.code,
+            htmlPreview: null,
+          },
+        ],
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+
+      setSessions((prev) => [...prev, editSession]);
+      setActiveId(editSession.id);
+      setError(null);
+      setInput('');
+    } catch (err) {
+      console.warn('Failed to load editScript from sessionStorage:', err);
+    }
+  }, [initialized]);
+
   useEffect(() => {
     if (initialized && sessions.length === 0) {
       const s: ChatSession = {
