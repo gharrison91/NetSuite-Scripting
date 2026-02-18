@@ -384,7 +384,7 @@ export function RepoSelector() {
                           <AlertCircle className="h-3.5 w-3.5 text-yellow-500" />
                         )
                       ) : (
-                        <AlertCircle className="h-3.5 w-3.5 text-yellow-500" />
+                        <CheckCircle className="h-3.5 w-3.5 text-green-500" />
                       )}
                       <span>
                         {healthResult.tokenScopes.length > 0
@@ -393,7 +393,7 @@ export function RepoSelector() {
                                 ? ' (missing "repo" scope for private repos)'
                                 : ''
                             }`
-                          : 'No scopes detected (fine-grained token or limited permissions)'}
+                          : 'Fine-grained token detected (scopes managed via repository permissions)'}
                       </span>
                     </div>
                   )}
