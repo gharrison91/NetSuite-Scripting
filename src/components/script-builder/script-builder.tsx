@@ -20,7 +20,6 @@ import {
   BookOpen,
   Ruler,
   Eye,
-  Code,
   Download,
   Send,
   Trash2,
@@ -31,8 +30,16 @@ import {
   Plus,
   MessageSquare,
   StopCircle,
+  Monitor,
+  FileText,
+  Activity,
+  ArrowRight,
+  Hash,
+  Boxes,
+  Search,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { analyzeScript, type ScriptAnalysis, type FieldOperation } from '@/lib/script-analyzer';
 
 /* ------------------------------------------------------------------ */
 /*  Constants & types                                                  */
@@ -152,7 +159,6 @@ function parseAiResponse(raw: string): { text: string; code: string | null; html
   return { text: cleaned, code: null, htmlPreview };
 }
 
-/** Parse Anthropic SSE stream and extract text deltas */
 function parseSSEDelta(chunk: string): string {
   let text = '';
   const lines = chunk.split('\n');
@@ -207,8 +213,14 @@ function highlightCode(code: string) {
 /* ------------------------------------------------------------------ */
 
 function CodeBlock({ message, scriptType }: { message: ChatMessage; scriptType: string }) {
-  const [view, setView] = useState<'preview' | 'raw'>('preview');
+  const [view, setView] = useState<'code' | 'raw' | 'ui' | 'analysis'>(() =>
+    message.htmlPreview ? 'ui' : 'code'
+  );
   const [copied, setCopied] = useState(false);
+  const analysis = useMemo(() =>
+    message.code ? analyzeScript(message.code) : null,
+    [message.code]
+  );
 
   const handleCopy = async () => {
     if (message.code) {
@@ -244,15 +256,27 @@ function CodeBlock({ message, scriptType }: { message: ChatMessage; scriptType: 
             {SCRIPT_TYPES.find((t) => t.value === scriptType)?.label}
           </Badge>
           <div className="flex items-center border rounded overflow-hidden">
+            {message.htmlPreview && (
+              <button
+                onClick={() => setView('ui')}
+                className={cn(
+                  'flex items-center gap-1 px-2 py-0.5 text-[10px] transition-colors',
+                  view === 'ui' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'
+                )}
+              >
+                <Monitor className="h-2.5 w-2.5" />
+                UI Preview
+              </button>
+            )}
             <button
-              onClick={() => setView('preview')}
+              onClick={() => setView('code')}
               className={cn(
                 'flex items-center gap-1 px-2 py-0.5 text-[10px] transition-colors',
-                view === 'preview' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'
+                view === 'code' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'
               )}
             >
               <Eye className="h-2.5 w-2.5" />
-              Preview
+              Code
             </button>
             <button
               onClick={() => setView('raw')}
@@ -261,8 +285,18 @@ function CodeBlock({ message, scriptType }: { message: ChatMessage; scriptType: 
                 view === 'raw' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'
               )}
             >
-              <Code className="h-2.5 w-2.5" />
+              <FileText className="h-2.5 w-2.5" />
               Raw
+            </button>
+            <button
+              onClick={() => setView('analysis')}
+              className={cn(
+                'flex items-center gap-1 px-2 py-0.5 text-[10px] transition-colors',
+                view === 'analysis' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'
+              )}
+            >
+              <Activity className="h-2.5 w-2.5" />
+              Analysis
             </button>
           </div>
         </div>
@@ -276,29 +310,29 @@ function CodeBlock({ message, scriptType }: { message: ChatMessage; scriptType: 
         </div>
       </div>
 
-      {view === 'preview' ? (
-        message.htmlPreview ? (
-          <div className="bg-white">
-            <iframe
-              srcDoc={message.htmlPreview}
-              sandbox="allow-scripts"
-              className="w-full border-0"
-              style={{ minHeight: 300 }}
-              title="UI Preview"
-              onLoad={(e) => {
-                const iframe = e.target as HTMLIFrameElement;
-                try {
-                  const h = iframe.contentDocument?.body?.scrollHeight;
-                  if (h) iframe.style.height = `${Math.min(h + 20, 600)}px`;
-                } catch { /* cross-origin */ }
-              }}
-            />
-          </div>
-        ) : (
-          <div className="p-3 text-xs font-mono leading-relaxed overflow-x-auto bg-[#1a1b26] max-h-[500px] overflow-y-auto">
-            {highlightCode(message.code)}
-          </div>
-        )
+      {view === 'ui' && message.htmlPreview ? (
+        <div className="bg-white">
+          <iframe
+            srcDoc={message.htmlPreview}
+            sandbox="allow-scripts"
+            className="w-full border-0"
+            style={{ minHeight: 300 }}
+            title="UI Preview"
+            onLoad={(e) => {
+              const iframe = e.target as HTMLIFrameElement;
+              try {
+                const h = iframe.contentDocument?.body?.scrollHeight;
+                if (h) iframe.style.height = `${Math.min(h + 20, 600)}px`;
+              } catch { /* cross-origin */ }
+            }}
+          />
+        </div>
+      ) : view === 'analysis' && analysis ? (
+        <ScriptAnalysisView analysis={analysis} />
+      ) : view === 'code' ? (
+        <div className="p-3 text-xs font-mono leading-relaxed overflow-x-auto bg-[#1a1b26] max-h-[500px] overflow-y-auto">
+          {highlightCode(message.code)}
+        </div>
       ) : (
         <pre className="p-3 text-xs font-mono leading-relaxed overflow-x-auto whitespace-pre bg-muted/30 max-h-[500px] overflow-y-auto">
           <code>{message.code}</code>
@@ -307,6 +341,204 @@ function CodeBlock({ message, scriptType }: { message: ChatMessage; scriptType: 
     </div>
   );
 }
+
+/* ------------------------------------------------------------------ */
+/*  Script Analysis View                                               */
+/* ------------------------------------------------------------------ */
+
+function ScriptAnalysisView({ analysis }: { analysis: ScriptAnalysis }) {
+  const [fieldSearch, setFieldSearch] = useState('');
+
+  const OP_COLORS: Record<string, string> = {
+    get: 'bg-blue-500/15 text-blue-400 border-blue-500/30',
+    set: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
+    hide: 'bg-orange-500/15 text-orange-400 border-orange-500/30',
+    show: 'bg-green-500/15 text-green-400 border-green-500/30',
+    disable: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/30',
+    enable: 'bg-teal-500/15 text-teal-400 border-teal-500/30',
+    mandatory: 'bg-red-500/15 text-red-400 border-red-500/30',
+  };
+
+  const OP_LABELS: Record<string, string> = {
+    get: 'READ',
+    set: 'WRITE',
+    hide: 'HIDE',
+    show: 'SHOW',
+    disable: 'DISABLE',
+    enable: 'ENABLE',
+    mandatory: 'REQUIRED',
+  };
+
+  const filteredFields = fieldSearch
+    ? analysis.fields.filter((f) => f.fieldId.toLowerCase().includes(fieldSearch.toLowerCase()))
+    : analysis.fields;
+
+  // Group field operations by field ID
+  const fieldGroups = new Map<string, FieldOperation[]>();
+  for (const f of filteredFields) {
+    if (!fieldGroups.has(f.fieldId)) fieldGroups.set(f.fieldId, []);
+    fieldGroups.get(f.fieldId)!.push(f);
+  }
+
+  return (
+    <div className="p-4 space-y-4 max-h-[500px] overflow-y-auto text-sm">
+      {/* Summary bar */}
+      <div className="p-3 rounded-lg bg-primary/5 border border-primary/20">
+        <p className="text-xs text-muted-foreground">{analysis.summary}</p>
+      </div>
+
+      {/* Entry Points */}
+      {analysis.entryPoints.length > 0 && (
+        <div>
+          <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
+            Entry Points
+          </h4>
+          <div className="flex flex-wrap gap-2">
+            {analysis.entryPoints.map((ep, i) => (
+              <div
+                key={i}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-violet-500/10 border border-violet-500/20 text-violet-400 text-xs"
+              >
+                <ArrowRight className="h-3 w-3" />
+                <span className="font-medium">{ep.type}</span>
+                <span className="text-[10px] text-muted-foreground">L{ep.line}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Modules */}
+      {analysis.modules.length > 0 && (
+        <div>
+          <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
+            Modules
+          </h4>
+          <div className="flex flex-wrap gap-2">
+            {analysis.modules.map((m, i) => (
+              <div
+                key={i}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 text-xs"
+              >
+                <Boxes className="h-3 w-3" />
+                <span className="font-mono">{m.module}</span>
+                <span className="text-[10px] text-muted-foreground">as {m.alias}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Field Operations */}
+      {analysis.fields.length > 0 && (
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+              Field Operations ({analysis.uniqueFieldIds.length} fields)
+            </h4>
+            <div className="relative">
+              <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
+              <input
+                type="text"
+                placeholder="Filter fields..."
+                value={fieldSearch}
+                onChange={(e) => setFieldSearch(e.target.value)}
+                className="pl-7 pr-2 py-1 text-[11px] rounded border bg-background text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary w-36"
+              />
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            {[...fieldGroups.entries()].map(([fieldId, ops]) => (
+              <div key={fieldId} className="rounded-lg border bg-card/50 p-2.5">
+                <div className="flex items-center gap-2 mb-1.5">
+                  <Hash className="h-3 w-3 text-muted-foreground" />
+                  <span className="font-mono text-xs font-medium text-foreground">{fieldId}</span>
+                  <div className="flex gap-1 ml-auto">
+                    {[...new Set(ops.map((o) => o.operation))].map((op) => (
+                      <span
+                        key={op}
+                        className={cn(
+                          'text-[9px] px-1.5 py-0.5 rounded border font-semibold',
+                          OP_COLORS[op] || 'bg-muted text-muted-foreground'
+                        )}
+                      >
+                        {OP_LABELS[op] || op.toUpperCase()}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                <div className="space-y-0.5">
+                  {ops.map((op, i) => (
+                    <div key={i} className="flex items-center gap-2 text-[10px] text-muted-foreground">
+                      <span className="w-8 text-right shrink-0">L{op.line}</span>
+                      <span className="font-mono truncate">{op.context}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Conditions */}
+      {analysis.conditions.length > 0 && (
+        <div>
+          <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
+            Conditional Logic
+          </h4>
+          <div className="space-y-1.5">
+            {analysis.conditions.map((c, i) => (
+              <div key={i} className="rounded border bg-amber-500/5 border-amber-500/20 p-2">
+                <div className="flex items-center gap-2 text-[10px]">
+                  <span className="text-muted-foreground shrink-0">L{c.line}</span>
+                  <code className="font-mono text-amber-400 truncate">{c.condition}</code>
+                </div>
+                {c.fields.length > 0 && (
+                  <div className="flex gap-1 mt-1 flex-wrap">
+                    {c.fields.map((f, j) => (
+                      <span key={j} className="text-[9px] px-1.5 py-0.5 rounded bg-muted font-mono">
+                        {f}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Record types */}
+      {analysis.recordTypes.length > 0 && (
+        <div>
+          <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
+            Record Types
+          </h4>
+          <div className="flex flex-wrap gap-2">
+            {analysis.recordTypes.map((rt, i) => (
+              <span key={i} className="text-xs px-2.5 py-1.5 rounded-md bg-rose-500/10 border border-rose-500/20 text-rose-400 font-mono">
+                {rt}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {analysis.fields.length === 0 && analysis.entryPoints.length === 0 && (
+        <div className="text-center py-6 text-muted-foreground text-xs">
+          No significant script operations detected. The script may use patterns
+          not yet recognized by the analyzer.
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Per-session generation tracking                                    */
+/* ------------------------------------------------------------------ */
 
 /* ------------------------------------------------------------------ */
 /*  Main component                                                     */
@@ -324,25 +556,26 @@ export function ScriptBuilder() {
   const [contextFiles, setContextFiles] = useState<ContextFile[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
-  /* Chat state */
-  const [input, setInput] = useState('');
-  const [generating, setGenerating] = useState(false);
-  const [streamingText, setStreamingText] = useState('');
+  /* Per-session generation tracking */
+  const [generatingSet, setGeneratingSet] = useState<Set<string>>(new Set());
+  const [streamingTexts, setStreamingTexts] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
+  const [input, setInput] = useState('');
 
+  const abortControllers = useRef<Record<string, AbortController>>({});
   const cachedContext = useRef<{ name: string; content: string }[] | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const abortRef = useRef<AbortController | null>(null);
 
   /* Derived: active session & messages */
   const activeSession = sessions.find((s) => s.id === activeId) ?? null;
   const messages = activeSession?.messages ?? [];
   const scriptType = activeSession?.scriptType ?? 'user-event';
+  const isActiveGenerating = activeId ? generatingSet.has(activeId) : false;
+  const activeStreamingText = activeId ? streamingTexts[activeId] || '' : '';
 
   /* ---- Persistence ---- */
 
-  // Load from localStorage on mount
   useEffect(() => {
     const loaded = loadSessions();
     const savedId = loadActiveId();
@@ -357,7 +590,6 @@ export function ScriptBuilder() {
     setInitialized(true);
   }, []);
 
-  // Auto-create first session if none exist
   useEffect(() => {
     if (initialized && sessions.length === 0) {
       const s: ChatSession = {
@@ -373,24 +605,18 @@ export function ScriptBuilder() {
     }
   }, [initialized, sessions.length]);
 
-  // Save sessions to localStorage whenever they change
   useEffect(() => {
-    if (initialized) {
-      saveSessions(sessions);
-    }
+    if (initialized) saveSessions(sessions);
   }, [sessions, initialized]);
 
-  // Save active ID
   useEffect(() => {
-    if (initialized) {
-      saveActiveId(activeId);
-    }
+    if (initialized) saveActiveId(activeId);
   }, [activeId, initialized]);
 
-  /* Auto-scroll */
+  /* Auto-scroll (only for active session) */
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages.length, generating, streamingText]);
+  }, [messages.length, isActiveGenerating, activeStreamingText]);
 
   /* Discover context files */
   useEffect(() => {
@@ -446,18 +672,26 @@ export function ScriptBuilder() {
     setActiveId(s.id);
     setError(null);
     setInput('');
-    cachedContext.current = null;
   }, []);
 
   const switchSession = useCallback((id: string) => {
     setActiveId(id);
     setError(null);
     setInput('');
-    cachedContext.current = null;
   }, []);
 
   const deleteSession = useCallback(
     (id: string) => {
+      // Abort if generating
+      if (abortControllers.current[id]) {
+        abortControllers.current[id].abort();
+        delete abortControllers.current[id];
+      }
+      setGeneratingSet((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
       setSessions((prev) => {
         const next = prev.filter((s) => s.id !== id);
         if (activeId === id) {
@@ -480,12 +714,11 @@ export function ScriptBuilder() {
     [activeId]
   );
 
-  const addMessage = useCallback(
-    (msg: ChatMessage) => {
-      if (!activeId) return;
+  const addMessageToSession = useCallback(
+    (sessionId: string, msg: ChatMessage) => {
       setSessions((prev) =>
         prev.map((s) => {
-          if (s.id !== activeId) return s;
+          if (s.id !== sessionId) return s;
           const isFirst = s.messages.length === 0 && msg.role === 'user';
           return {
             ...s,
@@ -496,20 +729,26 @@ export function ScriptBuilder() {
         })
       );
     },
-    [activeId]
+    []
   );
 
-  /* ---- Stop generation ---- */
-  const handleStop = useCallback(() => {
-    if (abortRef.current) {
-      abortRef.current.abort();
-      abortRef.current = null;
+  /* ---- Stop generation for a session ---- */
+  const handleStop = useCallback((sessionId?: string) => {
+    const id = sessionId || activeId;
+    if (!id) return;
+    if (abortControllers.current[id]) {
+      abortControllers.current[id].abort();
     }
-  }, []);
+  }, [activeId]);
 
-  /* ---- Send message (streaming) ---- */
+  /* ---- Send message (streaming, per-session) ---- */
   const handleSend = async () => {
-    if (!input.trim() || generating || !config || !activeId) return;
+    if (!input.trim() || !config || !activeId) return;
+    if (isActiveGenerating) return; // Don't double-send in same session
+
+    const sessionId = activeId;
+    const currentMessages = [...messages];
+    const currentScriptType = scriptType;
 
     const userMsg: ChatMessage = {
       id: crypto.randomUUID(),
@@ -519,10 +758,10 @@ export function ScriptBuilder() {
       htmlPreview: null,
     };
 
-    addMessage(userMsg);
+    addMessageToSession(sessionId, userMsg);
     setInput('');
-    setGenerating(true);
-    setStreamingText('');
+    setGeneratingSet((prev) => new Set(prev).add(sessionId));
+    setStreamingTexts((prev) => ({ ...prev, [sessionId]: '' }));
     setError(null);
 
     try {
@@ -546,20 +785,20 @@ export function ScriptBuilder() {
         cachedContext.current = results.filter((r): r is { name: string; content: string } => r !== null);
       }
 
-      const apiMessages = [...messages, userMsg].map((m) => ({
+      const apiMessages = [...currentMessages, userMsg].map((m) => ({
         role: m.role,
         content: m.role === 'user' ? m.text : [m.text, m.code].filter(Boolean).join('\n\n'),
       }));
 
       const abortController = new AbortController();
-      abortRef.current = abortController;
+      abortControllers.current[sessionId] = abortController;
 
       const res = await fetch('/api/ai/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           messages: apiMessages,
-          scriptType,
+          scriptType: currentScriptType,
           contextFiles: cachedContext.current,
           stream: true,
         }),
@@ -584,13 +823,13 @@ export function ScriptBuilder() {
         const delta = parseSSEDelta(chunk);
         if (delta) {
           fullText += delta;
-          setStreamingText(fullText);
+          setStreamingTexts((prev) => ({ ...prev, [sessionId]: fullText }));
         }
       }
 
       // Parse completed response
       const parsed = parseAiResponse(fullText);
-      addMessage({
+      addMessageToSession(sessionId, {
         id: crypto.randomUUID(),
         role: 'assistant',
         text: parsed.text,
@@ -600,11 +839,11 @@ export function ScriptBuilder() {
 
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') {
-        // User cancelled — save partial response if we had one
-        const currentStreaming = fullTextRef.current;
-        if (currentStreaming) {
-          const parsed = parseAiResponse(currentStreaming);
-          addMessage({
+        // User cancelled — save partial response
+        const partial = streamingTexts[sessionId] || '';
+        if (partial) {
+          const parsed = parseAiResponse(partial);
+          addMessageToSession(sessionId, {
             id: crypto.randomUUID(),
             role: 'assistant',
             text: parsed.text || '(generation stopped)',
@@ -613,21 +852,27 @@ export function ScriptBuilder() {
           });
         }
       } else {
-        setError(err instanceof Error ? err.message : 'Failed to generate');
+        if (sessionId === activeId) {
+          setError(err instanceof Error ? err.message : 'Failed to generate');
+        }
       }
     } finally {
-      setGenerating(false);
-      setStreamingText('');
-      abortRef.current = null;
-      setTimeout(() => inputRef.current?.focus(), 100);
+      delete abortControllers.current[sessionId];
+      setGeneratingSet((prev) => {
+        const next = new Set(prev);
+        next.delete(sessionId);
+        return next;
+      });
+      setStreamingTexts((prev) => {
+        const next = { ...prev };
+        delete next[sessionId];
+        return next;
+      });
+      if (sessionId === activeId) {
+        setTimeout(() => inputRef.current?.focus(), 100);
+      }
     }
   };
-
-  // Track streaming text in a ref so abort handler can access it
-  const fullTextRef = useRef('');
-  useEffect(() => {
-    fullTextRef.current = streamingText;
-  }, [streamingText]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -649,6 +894,7 @@ export function ScriptBuilder() {
 
   const referenceFiles = contextFiles.filter((f) => f.source === 'reference');
   const standardsFiles = contextFiles.filter((f) => f.source === 'standards');
+  const totalGenerating = generatingSet.size;
 
   return (
     <div className="flex h-[calc(100vh-8rem)]">
@@ -672,6 +918,11 @@ export function ScriptBuilder() {
               <div className="flex items-center gap-2">
                 <Wand2 className="h-3.5 w-3.5 text-primary" />
                 <h2 className="text-xs font-semibold">Script Builder</h2>
+                {totalGenerating > 0 && (
+                  <Badge variant="default" className="text-[9px] px-1 py-0 h-4 ml-auto animate-pulse">
+                    {totalGenerating} active
+                  </Badge>
+                )}
               </div>
             </div>
 
@@ -797,7 +1048,11 @@ export function ScriptBuilder() {
                             : 'text-muted-foreground hover:bg-muted'
                         )}
                       >
-                        <MessageSquare className="h-2.5 w-2.5 shrink-0" />
+                        {generatingSet.has(s.id) ? (
+                          <Loader2 className="h-2.5 w-2.5 shrink-0 animate-spin text-primary" />
+                        ) : (
+                          <MessageSquare className="h-2.5 w-2.5 shrink-0" />
+                        )}
                         <span className="truncate flex-1">{s.name}</span>
                         <span className="text-[9px] text-muted-foreground/50 shrink-0">
                           {s.messages.length}
@@ -836,7 +1091,7 @@ export function ScriptBuilder() {
       <div className="flex-1 flex flex-col ml-4 border rounded-lg overflow-hidden">
         {/* Messages */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
-          {messages.length === 0 && !generating ? (
+          {messages.length === 0 && !isActiveGenerating ? (
             <div className="flex items-center justify-center h-full">
               <div className="text-center space-y-3 max-w-md">
                 <Wand2 className="h-10 w-10 mx-auto text-muted-foreground/30" />
@@ -845,6 +1100,10 @@ export function ScriptBuilder() {
                   Describe the script you need. You can iterate with follow-up messages
                   just like a normal conversation. For Suitelets and UI scripts, a visual
                   preview will be generated automatically.
+                </p>
+                <p className="text-[10px] text-muted-foreground/70">
+                  Tip: When code is generated, use the <strong>Code</strong> / <strong>Raw</strong> / <strong>UI Preview</strong> tabs
+                  above the code block to switch views.
                 </p>
                 <div className="flex flex-wrap gap-1.5 justify-center pt-2">
                   {[
@@ -900,14 +1159,14 @@ export function ScriptBuilder() {
               ))}
 
               {/* Streaming response */}
-              {generating && (
+              {isActiveGenerating && (
                 <div className="flex gap-3 justify-start">
                   <div className="shrink-0 w-7 h-7 rounded-full bg-primary/10 flex items-center justify-center mt-0.5">
                     <Bot className="h-3.5 w-3.5 text-primary" />
                   </div>
                   <div className="bg-muted/40 rounded-lg px-3 py-2 flex-1">
-                    {streamingText ? (
-                      <p className="text-sm leading-relaxed whitespace-pre-wrap">{streamingText}</p>
+                    {activeStreamingText ? (
+                      <p className="text-sm leading-relaxed whitespace-pre-wrap">{activeStreamingText}</p>
                     ) : (
                       <div className="flex items-center gap-2">
                         <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
@@ -947,9 +1206,9 @@ export function ScriptBuilder() {
                 t.style.height = `${Math.min(t.scrollHeight, 120)}px`;
               }}
             />
-            {generating ? (
+            {isActiveGenerating ? (
               <Button
-                onClick={handleStop}
+                onClick={() => handleStop()}
                 variant="destructive"
                 size="sm"
                 className="h-10 w-10 p-0 shrink-0"
@@ -970,6 +1229,7 @@ export function ScriptBuilder() {
           <p className="text-[10px] text-muted-foreground mt-1.5 text-center">
             {selectedCount} context file{selectedCount !== 1 ? 's' : ''} selected
             {messages.length > 0 && ` · ${messages.length} message${messages.length !== 1 ? 's' : ''}`}
+            {totalGenerating > 0 && ` · ${totalGenerating} session${totalGenerating !== 1 ? 's' : ''} generating`}
           </p>
         </div>
       </div>

@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Combobox, ComboboxOption } from '@/components/ui/combobox';
-import { GitBranch, Loader2, AlertCircle, CheckCircle, User, Wifi, ChevronDown, ChevronUp } from 'lucide-react';
+import { GitBranch, Loader2, AlertCircle, CheckCircle, User, Wifi, ChevronDown, ChevronUp, Zap } from 'lucide-react';
 
 interface RecentRepo {
   owner: string;
@@ -236,12 +236,23 @@ export function RepoSelector() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background p-4">
+    <div className="min-h-screen flex flex-col items-center justify-center bg-background p-4">
+      {/* Gradient background accent */}
+      <div className="fixed inset-0 -z-10 overflow-hidden">
+        <div className="absolute -top-1/2 -right-1/4 h-[800px] w-[800px] rounded-full bg-primary/5 blur-3xl" />
+        <div className="absolute -bottom-1/3 -left-1/4 h-[600px] w-[600px] rounded-full bg-chart-2/5 blur-3xl" />
+      </div>
+
       <div className="w-full max-w-lg space-y-6">
-        <div className="text-center space-y-2">
-          <h1 className="text-3xl font-bold tracking-tight">NetSuite Dashboard Manager</h1>
-          <p className="text-muted-foreground">
-            Connect to a GitHub repository to visualize your NetSuite codebase
+        <div className="text-center space-y-3">
+          <div className="inline-flex items-center justify-center h-14 w-14 rounded-2xl bg-primary/10 mb-2">
+            <Zap className="h-7 w-7 text-primary" />
+          </div>
+          <h1 className="text-3xl font-bold tracking-tight bg-gradient-to-r from-foreground to-foreground/70 bg-clip-text">
+            NetSuite Dashboard Manager
+          </h1>
+          <p className="text-muted-foreground text-sm">
+            Connect to a GitHub repository to visualize and manage your NetSuite codebase
           </p>
         </div>
 

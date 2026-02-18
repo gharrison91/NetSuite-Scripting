@@ -52,8 +52,6 @@ function DashboardContent() {
         return <MapsViewer />;
       case 'inbox':
         return <InboxList />;
-      case 'script-builder':
-        return <ScriptBuilder />;
       default:
         return <OverviewPage />;
     }
@@ -65,7 +63,12 @@ function DashboardContent() {
       <div className="flex-1 flex flex-col min-w-0">
         <Header />
         <main className="flex-1 overflow-y-auto p-6">
-          {renderView()}
+          {/* Script Builder stays mounted always — streaming continues
+              even when viewing other pages */}
+          <div className={view === 'script-builder' ? '' : 'hidden'}>
+            <ScriptBuilder />
+          </div>
+          {view !== 'script-builder' && renderView()}
         </main>
       </div>
     </div>

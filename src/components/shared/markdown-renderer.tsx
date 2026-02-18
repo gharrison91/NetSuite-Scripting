@@ -11,7 +11,12 @@ interface MarkdownRendererProps {
 }
 
 export function MarkdownRenderer({ content, enableTableParsing = false }: MarkdownRendererProps) {
-  const parsedTables = enableTableParsing ? extractTables(content) : [];
+  let parsedTables: ReturnType<typeof extractTables> = [];
+  try {
+    parsedTables = enableTableParsing ? extractTables(content) : [];
+  } catch (e) {
+    console.error('[MarkdownRenderer] extractTables failed:', e);
+  }
   let tableIndex = 0;
 
   return (
