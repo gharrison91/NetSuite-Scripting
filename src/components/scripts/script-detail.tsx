@@ -43,9 +43,16 @@ export function ScriptDetail({ script, onBack }: ScriptDetailProps) {
       path: script.path,
     };
     sessionStorage.setItem('scriptBuilder:editScript', JSON.stringify(editData));
+
+    // Navigate to script-builder view
     const repoParam = searchParams.get('repo') || '';
     const branchParam = searchParams.get('branch') || 'main';
     router.push(`/dashboard?repo=${repoParam}&branch=${branchParam}&view=script-builder`);
+
+    // Dispatch custom event so the always-mounted ScriptBuilder picks it up
+    setTimeout(() => {
+      window.dispatchEvent(new CustomEvent('scriptBuilder:editScript'));
+    }, 100);
   };
 
   const handleDownload = () => {

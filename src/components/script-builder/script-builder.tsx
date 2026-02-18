@@ -605,8 +605,7 @@ export function ScriptBuilder() {
   }, []);
 
   /* ---- Pick up editScript from sessionStorage (Edit in Builder flow) ---- */
-  useEffect(() => {
-    if (!initialized) return;
+  const loadEditScript = useCallback(() => {
     try {
       const raw = sessionStorage.getItem('scriptBuilder:editScript');
       if (!raw) return;
@@ -647,10 +646,23 @@ export function ScriptBuilder() {
       setActiveId(editSession.id);
       setError(null);
       setInput('');
+      setTopView('chat');
     } catch (err) {
       console.warn('Failed to load editScript from sessionStorage:', err);
     }
-  }, [initialized]);
+  }, []);
+
+  // Check on initial mount
+  useEffect(() => {
+    if (initialized) loadEditScript();
+  }, [initialized, loadEditScript]);
+
+  // Listen for custom event (fired when user clicks "Edit in Builder" while ScriptBuilder is already mounted)
+  useEffect(() => {
+    const handler = () => loadEditScript();
+    window.addEventListener('scriptBuilder:editScript', handler);
+    return () => window.removeEventListener('scriptBuilder:editScript', handler);
+  }, [loadEditScript]);
 
   useEffect(() => {
     if (initialized && sessions.length === 0) {
